@@ -1,0 +1,44 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify package
+        run: python scripts/verify.py
+      - name: Check shell syntax
+        run: bash -n scripts/install-codex.sh
+      - name: Clean-room installer test
+        run: |
+          export AGENT_ORCHESTRATOR_HOME="$RUNNER_TEMP/agent-orchestrator-home"
+          ./scripts/install-codex.sh
+          test -f "$AGENT_ORCHESTRATOR_HOME/.agents/skills/agent-orchestrator/SKILL.md"
+          test ! -e "$AGENT_ORCHESTRATOR_HOME/.agents/skills/agent-orchestrator/examples"
+          test -f "$AGENT_ORCHESTRATOR_HOME/.codex/agents/orchestrator.toml"
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify package
+        run: python scripts/verify.py
+      - name: Parse and test PowerShell installer
+        shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content -Raw scripts/install-codex.ps1))
+          $env:AGENT_ORCHESTRATOR_HOME = Join-Path $env:RUNNER_TEMP "agent-orchestrator-home"
+          .\scripts\install-codex.ps1
+          if (-not (Test-Path "$env:AGENT_ORCHESTRATOR_HOME\.agents\skills\agent-orchestrator\SKILL.md")) { throw "Skill install missing" }
+          if (Test-Path "$env:AGENT_ORCHESTRATOR_HOME\.agents\skills\agent-orchestrator\examples") { throw "Runtime copy is not lean" }
+          if (-not (Test-Path "$env:AGENT_ORCHESTRATOR_HOME\.codex\agents\orchestrator.toml")) { throw "Agent install missing" }

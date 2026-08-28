@@ -1,0 +1,11 @@
+# Merge/adapt this into a project .codex/config.toml or your Codex config.
+# The main thread uses Sol. Change effort per project/task class:
+# A=medium, B=high, C=xhigh, D=max.
+
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+
+[agents]
+enabled = true
+# This is a ceiling, not a target. Spawn only meaningful workstreams.
+max_concurrent_threads_per_session = 6

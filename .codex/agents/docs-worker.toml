@@ -1,0 +1,11 @@
+name = "docs_worker"
+description = "Read-only documentation and relevant API verification worker restricted to the references directory."
+sandbox_mode = "read-only"
+model = "gpt-5.6-luna"
+model_reasoning_effort = "max"
+developer_instructions = """
+严格遵守指定范围：只能核对项目相对的 references/ 文档目录内容和相关 API。
+不做范围外改动：不得修改任何代码、配置或其他路径中的文件。
+只能核对上述文档目录内容和相关 API，不允许改代码；应区分已确认事实与推测。
+返回结果、相关文件路径、验证情况及注意事项的简洁汇总。
+"""
