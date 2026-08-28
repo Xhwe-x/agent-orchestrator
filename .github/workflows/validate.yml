@@ -12,17 +12,49 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Install verifier dependencies
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements-dev.txt
       - name: Verify package
         run: python scripts/verify.py
+      - name: Compile verifier
+        run: python -m py_compile scripts/verify.py
+      - name: Verify local release gate
+        run: python scripts/verify.py --release
+      - name: Build release archive
+        run: python scripts/verify.py --build-release-archive "$RUNNER_TEMP/agent-orchestrator-v0.3-token-aware.zip"
+      - name: Verify release archive
+        run: python scripts/verify.py --release-archive "$RUNNER_TEMP/agent-orchestrator-v0.3-token-aware.zip"
       - name: Check shell syntax
         run: bash -n scripts/install-codex.sh
       - name: Clean-room installer test
         run: |
           export AGENT_ORCHESTRATOR_HOME="$RUNNER_TEMP/agent-orchestrator-home"
           ./scripts/install-codex.sh
-          test -f "$AGENT_ORCHESTRATOR_HOME/.agents/skills/agent-orchestrator/SKILL.md"
-          test ! -e "$AGENT_ORCHESTRATOR_HOME/.agents/skills/agent-orchestrator/examples"
-          test -f "$AGENT_ORCHESTRATOR_HOME/.codex/agents/orchestrator.toml"
+          skill="$AGENT_ORCHESTRATOR_HOME/.agents/skills/agent-orchestrator"
+          agents="$AGENT_ORCHESTRATOR_HOME/.codex/agents"
+          test -f "$skill/SKILL.md"
+          actual_layout="$(find "$skill" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
+          expected_layout=$'SKILL.md\nagents\nreferences'
+          test "$actual_layout" = "$expected_layout"
+          for dev_only in examples tests scripts templates .github; do
+            test ! -e "$skill/$dev_only"
+          done
+          agent_sources=(templates/codex-agents/*.toml)
+          test "${#agent_sources[@]}" -eq 8
+          test "$(find "$agents" -mindepth 1 -maxdepth 1 -type f -name '*.toml' | wc -l)" -eq 8
+          for source in "${agent_sources[@]}"; do
+            test -f "$agents/$(basename "$source")"
+          done
+          if ./scripts/install-codex.sh; then
+            echo "repeat install unexpectedly succeeded" >&2
+            exit 1
+          fi
+          echo "clean-room mutation" >> "$skill/SKILL.md"
+          ./scripts/install-codex.sh --force
+          cmp -s SKILL.md "$skill/SKILL.md"
+          for source in "${agent_sources[@]}"; do
+            test -f "$agents/$(basename "$source")"
+          done
 
   windows:
     runs-on: windows-latest
@@ -31,14 +63,51 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Install verifier dependencies
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements-dev.txt
       - name: Verify package
         run: python scripts/verify.py
+      - name: Compile verifier
+        run: python -m py_compile scripts/verify.py
+      - name: Verify local release gate
+        run: python scripts/verify.py --release
+      - name: Build release archive
+        shell: pwsh
+        run: python scripts/verify.py --build-release-archive (Join-Path $env:RUNNER_TEMP "agent-orchestrator-v0.3-token-aware.zip")
+      - name: Verify release archive
+        shell: pwsh
+        run: python scripts/verify.py --release-archive (Join-Path $env:RUNNER_TEMP "agent-orchestrator-v0.3-token-aware.zip")
       - name: Parse and test PowerShell installer
         shell: pwsh
         run: |
           [void][scriptblock]::Create((Get-Content -Raw scripts/install-codex.ps1))
           $env:AGENT_ORCHESTRATOR_HOME = Join-Path $env:RUNNER_TEMP "agent-orchestrator-home"
-          .\scripts\install-codex.ps1
-          if (-not (Test-Path "$env:AGENT_ORCHESTRATOR_HOME\.agents\skills\agent-orchestrator\SKILL.md")) { throw "Skill install missing" }
-          if (Test-Path "$env:AGENT_ORCHESTRATOR_HOME\.agents\skills\agent-orchestrator\examples") { throw "Runtime copy is not lean" }
-          if (-not (Test-Path "$env:AGENT_ORCHESTRATOR_HOME\.codex\agents\orchestrator.toml")) { throw "Agent install missing" }
+          & .\scripts\install-codex.ps1
+          $skill = Join-Path $env:AGENT_ORCHESTRATOR_HOME ".agents\skills\agent-orchestrator"
+          $agents = Join-Path $env:AGENT_ORCHESTRATOR_HOME ".codex\agents"
+          if (-not (Test-Path (Join-Path $skill "SKILL.md"))) { throw "Skill install missing" }
+          $actualLayout = @(Get-ChildItem -LiteralPath $skill -Force | ForEach-Object Name | Sort-Object)
+          $expectedLayout = @("SKILL.md", "agents", "references")
+          if (Compare-Object -ReferenceObject $expectedLayout -DifferenceObject $actualLayout) { throw "Runtime top-level layout is not exact" }
+          foreach ($devOnly in @("examples", "tests", "scripts", "templates", ".github")) {
+              if (Test-Path (Join-Path $skill $devOnly)) { throw "Runtime copy contains $devOnly" }
+          }
+          $agentSources = @(Get-ChildItem templates\codex-agents\*.toml -File)
+          if ($agentSources.Count -ne 8) { throw "Expected 8 template agents" }
+          $installedAgents = @(Get-ChildItem -LiteralPath $agents -Filter "*.toml" -File)
+          if ($installedAgents.Count -ne 8) { throw "Expected 8 installed agents" }
+          foreach ($source in $agentSources) {
+              if (-not (Test-Path (Join-Path $agents $source.Name))) { throw "Agent install missing: $($source.Name)" }
+          }
+          $repeatFailed = $false
+          try { & .\scripts\install-codex.ps1 } catch { $repeatFailed = $true }
+          if (-not $repeatFailed) { throw "repeat install unexpectedly succeeded" }
+          Add-Content -LiteralPath (Join-Path $skill "SKILL.md") -Value "clean-room mutation"
+          & .\scripts\install-codex.ps1 -Force
+          $sourceHash = (Get-FileHash -LiteralPath "SKILL.md").Hash
+          $installedHash = (Get-FileHash -LiteralPath (Join-Path $skill "SKILL.md")).Hash
+          if ($sourceHash -ne $installedHash) { throw "-Force did not restore canonical runtime content" }
+          foreach ($source in $agentSources) {
+              if (-not (Test-Path (Join-Path $agents $source.Name))) { throw "Forced agent install missing: $($source.Name)" }
+          }

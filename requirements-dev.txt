@@ -1,0 +1,2 @@
+# YAML parsing for scripts/verify.py; Python has no standard-library YAML parser.
+PyYAML>=6.0,<7

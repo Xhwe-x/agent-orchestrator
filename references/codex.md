@@ -30,16 +30,19 @@ Agent TOMLs are copied separately to `$HOME/.codex/agents/`.
 
 ## Main orchestrator effort
 
-`templates/codex-agents/orchestrator.toml` pins `gpt-5.6-sol` but does not pin reasoning effort. Select the project/session effort using the matrix in `references/models.md`.
+`templates/codex-agents/orchestrator.toml` pins `gpt-5.6-sol` and uses `medium` as the default reasoning effort. The primary orchestrator alone may select the next level on the `medium → high → xhigh → max` ladder in `references/orchestration.md`; `max` is exceptional.
 
-A static TOML cannot simultaneously encode four different project-specific effort levels; the reusable profile therefore leaves effort to the active project/session configuration.
+The reusable profile keeps this default explicit; higher effort is an orchestration-time decision, not a worker choice.
 
 ## Worker models
 
-The reusable worker TOMLs deliberately pin the requested split:
+The reusable worker TOMLs pin the requested model split and role-based defaults:
 
-- Terra + `max`: implementation workers;
-- Luna + `max`: test/review/explorer/docs workers.
+- Terra + `medium`: frontend, backend, and generic implementation workers;
+- Luna + `high`: test and review workers;
+- Luna + `medium`: explorer and docs workers.
+
+Workers never self-escalate. The orchestrator may retry or re-dispatch a worker at a higher level after reviewing its structured escalation signal.
 
 ## AGENTS.md layering
 

@@ -2,12 +2,13 @@ name = "docs_worker"
 description = "Read-only researcher for framework, API, dependency, protocol, and project-documentation questions."
 sandbox_mode = "read-only"
 model = "gpt-5.6-luna"
-model_reasoning_effort = "max"
+model_reasoning_effort = "medium"
 developer_instructions = """
 Stay read-only and answer only the documentation/API question in the parent contract.
 Prefer authoritative project documentation and official upstream sources when available.
 Separate confirmed version-specific facts from assumptions and include exact links, paths, symbols, or versions when useful.
 Do not drift into implementation.
-Do not spawn subagents.
-Return concise evidence that the orchestrator can act on.
+Do not self-escalate reasoning effort. If higher effort is needed, signal ESCALATION to the orchestrator for its decision.
+Do not spawn subagents or delegate further by default; only create a subagent when the primary orchestrator explicitly authorizes nested delegation for that specific task. Keep delegation one level deep otherwise.
+Return a compact report with RESULT, FILES, VERIFICATION, and RISKS; add ESCALATION only when applicable.
 """

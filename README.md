@@ -36,7 +36,9 @@ inspect repository + AGENTS.md
         → integrate and run final verification
 ```
 
-Read-heavy work and disjoint writes may run in parallel. Shared interfaces, migrations, lockfiles, generated artifacts, and overlapping writes stay serialized or orchestrator-owned. Workers do not spawn additional subagents, and a worker's completion is evidence—not final acceptance.
+Read-heavy work and disjoint writes may run in parallel. Shared interfaces, migrations, lockfiles, generated artifacts, and overlapping writes stay serialized or orchestrator-owned. Nested delegation is prohibited by default. Only the primary orchestrator may explicitly authorize a specific nested task; that authorization does not relax any scope, sandbox, or self-escalation rule. A worker's completion is evidence—not final acceptance.
+
+The first repository investigation creates a compact Repository Digest of ownership, entry points, shared contracts, verification commands, and important constraints; workers receive it with their scoped contracts instead of rescanning the whole repository. The primary thread handles trivial reviews, while `review_worker` is reserved for elevated-risk changes with a recorded rationale and effort choice.
 
 ## Roles and model split
 
@@ -44,16 +46,16 @@ The reusable profiles contain one primary orchestrator and seven bounded worker 
 
 | Profile | Responsibility | Access | Model / effort |
 |---|---|---|---|
-| `orchestrator` | Requirements, decomposition, dispatch, review, integration, final verification | `workspace-write` | `gpt-5.6-sol` / project-selected |
-| `frontend_worker` | Existing client UI, components, styles, and client-side state | scoped write | `gpt-5.6-terra` / `max` |
-| `backend_worker` | Existing server, API, persistence, or backend-service code | scoped write | `gpt-5.6-terra` / `max` |
-| `generic_worker` | Existing non-frontend, non-backend implementation domains | scoped write | `gpt-5.6-terra` / `max` |
-| `test_worker` | Assigned tests, fixtures, harnesses, and non-destructive verification | scoped write | `gpt-5.6-luna` / `max` |
-| `explorer_worker` | Ownership, dependency, execution-path, shared-file, and verification-command research | read-only | `gpt-5.6-luna` / `max` |
-| `docs_worker` | Framework, API, dependency, protocol, and project-documentation research | read-only | `gpt-5.6-luna` / `max` |
-| `review_worker` | Correctness, regression, interface, security-relevant, and test-gap audit | read-only | `gpt-5.6-luna` / `max` |
+| `orchestrator` | Requirements, decomposition, dispatch, review, integration, final verification | `workspace-write` | `gpt-5.6-sol` / `medium` default |
+| `frontend_worker` | Existing client UI, components, styles, and client-side state | scoped write | `gpt-5.6-terra` / `medium` default |
+| `backend_worker` | Existing server, API, persistence, or backend-service code | scoped write | `gpt-5.6-terra` / `medium` default |
+| `generic_worker` | Existing non-frontend, non-backend implementation domains | scoped write | `gpt-5.6-terra` / `medium` default |
+| `test_worker` | Assigned tests, fixtures, harnesses, and non-destructive verification | scoped write | `gpt-5.6-luna` / `high` default |
+| `explorer_worker` | Ownership, dependency, execution-path, shared-file, and verification-command research | read-only | `gpt-5.6-luna` / `medium` default |
+| `docs_worker` | Framework, API, dependency, protocol, and project-documentation research | read-only | `gpt-5.6-luna` / `medium` default |
+| `review_worker` | Correctness, regression, interface, security-relevant, and test-gap audit | read-only | `gpt-5.6-luna` / `high` default |
 
-The orchestrator profile pins Sol but intentionally leaves reasoning effort to the active project/session configuration. The suggested effort matrix is A=`medium`, B=`high`, C=`xhigh`, and D=`max`; choose the lowest level that fits the actual complexity. Implementation workers use Terra; test, review, exploration, and documentation workers use Luna.
+The orchestrator controls one effort ladder, `medium → high → xhigh → max`, and moves up only when evidence justifies it. Workers never self-escalate; they return an escalation signal for the orchestrator to assess. `max` is an exceptional final escalation, never a normal default. Implementation workers use Terra; test, review, exploration, and documentation workers use Luna.
 
 `backend_worker` is valid only when the repository already contains a real server/API/persistence/backend-service boundary. A game or tool without one should use `generic_worker` or a project-defined domain worker instead.
 
@@ -111,7 +113,7 @@ The configuration template currently demonstrates:
 
 ```toml
 model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+model_reasoning_effort = "medium"
 
 [agents]
 enabled = true
@@ -127,15 +129,21 @@ The concurrency value is a ceiling, not a target. Adapt the template to the proj
 
 ## Verify
 
-Run the repository's package verifier:
+Install the local development-verification dependencies first:
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+Then run the repository's package verifier:
 
 ```bash
 python scripts/verify.py
 ```
 
-It checks required structure, Skill metadata and size, TOML syntax, model/effort mapping, backend semantics, one-level delegation, local links, text hygiene, portability, OpenAI metadata, and installer invariants. The [GitHub Actions workflow](.github/workflows/validate.yml) also checks shell syntax and clean-room installation on Linux, and parses and tests the PowerShell installer on Windows with Python 3.13.
+It checks required structure, Skill metadata and size, TOML syntax, model/effort mapping, backend semantics, the default nested-delegation policy, local links, text hygiene, portability, OpenAI metadata, and installer invariants. The [GitHub Actions workflow](.github/workflows/validate.yml) also checks shell syntax and clean-room installation on Linux, and parses and tests the PowerShell installer on Windows with Python 3.13.
 
-For manual live Codex behavior cases, see [tests/evals.md](tests/evals.md). The documented acceptance record is in [ACCEPTANCE.md](ACCEPTANCE.md).
+For manual live Codex behavior cases, see [tests/evals.md](tests/evals.md). The documented acceptance record is in [ACCEPTANCE.md on GitHub](https://github.com/Xhwe-x/agent-orchestrator/blob/main/ACCEPTANCE.md).
 
 ## Repository map
 

@@ -2,32 +2,28 @@
 
 Reviewed against OpenAI GPT-5.6 documentation on 2026-08-28.
 
-## Fixed role split
+## Fixed role split and defaults
 
-| Role family | Model | Reasoning effort |
+The model identities remain fixed. The effort values below are role-based defaults; they are not permission for a worker to change its own effort.
+
+| Agent | Model | Default reasoning effort |
 |---|---|---|
-| Primary orchestrator | `gpt-5.6-sol` | adaptive by project/task class |
-| Frontend/backend/generic implementation | `gpt-5.6-terra` | `max` |
-| Test/review/explorer/docs | `gpt-5.6-luna` | `max` |
+| `orchestrator` | `gpt-5.6-sol` | `medium` |
+| `frontend_worker` | `gpt-5.6-terra` | `medium` |
+| `backend_worker` | `gpt-5.6-terra` | `medium` |
+| `generic_worker` | `gpt-5.6-terra` | `medium` |
+| `test_worker` | `gpt-5.6-luna` | `high` |
+| `review_worker` | `gpt-5.6-luna` | `high` |
+| `explorer_worker` | `gpt-5.6-luna` | `medium` |
+| `docs_worker` | `gpt-5.6-luna` | `medium` |
 
-All worker TOMLs pin both model and `max` effort. The orchestrator TOML pins Sol but intentionally omits `model_reasoning_effort` so the active project/session setting can control effort.
+Sol remains the primary orchestrator, Terra handles implementation, and Luna handles verification and read-only work. The orchestrator controls the single `medium → high → xhigh → max` ladder described in [orchestration rules](orchestration.md). Workers never self-escalate; they return an escalation signal for the orchestrator to assess. `max` is an exceptional final escalation, never a normal default.
 
-## Orchestrator effort matrix
+## Effort guidance
 
-Use the lowest level that matches the actual project/task complexity:
+Start at the role default and use the lowest level that matches the actual complexity. Use `high` for ambiguity, failed in-scope work, or difficult implementation/verification. Use `xhigh` for architecture-level changes, cross-module migrations, shared high-blast-radius contracts, concurrency, or security-sensitive integration. Reserve `max` for unusually high failure cost or tightly coupled work after `high` and `xhigh` have proved insufficient.
 
-| Task class | Suggested Sol effort |
-|---|---|
-| A — small/local | `medium` |
-| B — assisted/uncertain | `high` |
-| C — multiple workstreams | `xhigh` |
-| D — cross-cutting/coherence-critical | `max` |
-
-User/project instructions override this matrix. Do not automatically escalate every task to `max`.
-
-## Why the split
-
-Sol is reserved for requirements, decomposition, cross-worker judgment, integration, and final acceptance. Terra handles implementation work at maximum reasoning. Luna handles test, review, exploration, and documentation at maximum reasoning. This keeps the orchestration policy simple and removes duplicate model-profile files.
+The orchestrator may retry or re-dispatch only after reviewing a worker's evidence. User and project instructions take precedence over these defaults, but a worker may not silently widen scope or select a higher effort.
 
 ## Maintenance
 
