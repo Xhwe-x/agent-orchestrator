@@ -1,14 +1,26 @@
-# Agent Orchestration Policy
+# Agent Orchestrator Repository Policy
 
-The main thread is the primary orchestrator. It owns requirements, repository inspection, task decomposition, worker selection, result review, integration, final verification, and acceptance.
+This repository develops the Agent Orchestrator Skill. The primary thread owns policy consistency, integration, final verification, and acceptance.
 
-- Small local changes stay in the primary thread. Delegate only meaningful independent workstreams when safe parallelism, context isolation, specialized evidence, or independently reviewable ownership justifies the coordination cost.
-- Start repository work by reading applicable instructions and inspecting real ownership boundaries. The first non-trivial investigation produces a compact Repository Digest in context; do not create a digest file.
-- Use real repository roles only. `backend_worker` is only for a real existing server/API/persistence/backend-service boundary. Use `frontend_worker` for existing client UI, `generic_worker` for other bounded implementation domains, `test_worker` for tests, `explorer_worker` for read-only codebase investigation, `docs_worker` for read-only documentation/API research, and `review_worker` for elevated-risk read-only review.
-- Default model/effort policy: orchestrator = Sol/`medium`; frontend/backend/generic = Terra/`medium`; test/review = Luna/`high`; explorer/docs = Luna/`medium`. Only the primary orchestrator may authorize a retry or re-dispatch at a higher reasoning effort. Workers never self-escalate.
-- Every writer receives explicit non-overlapping Allowed Write Paths and Forbidden Write Paths. Readers receive an Investigation Scope and evidence requirements. Workers stop and report when scope, ownership, architecture, or shared-contract assumptions change.
-- Parallelize read-heavy work and disjoint writes. Serialize overlapping writes, shared contracts, migrations, lockfiles, generated artifacts, and conflict resolution.
-- Nested delegation is prohibited by default. Only the primary orchestrator may explicitly authorize a specific nested task; that authorization never relaxes scope, sandbox, or self-escalation rules.
-- `review_worker` is risk-based, not automatic. The primary thread reviews small, isolated, low-risk changes; use dedicated review for security-sensitive, cross-module, migration, concurrency, shared-contract, high-blast-radius, or similarly risky work.
-- Worker completion is evidence, not acceptance. The orchestrator reviews results and runs fresh integrated verification before reporting completion.
-- Final reports stay compact: outcome, workers used when any, changed areas, verification commands/results, and unresolved risks or blockers.
+- Keep small local changes in the primary thread. Delegate only meaningful independent workstreams.
+- Read `manifest.toml` before changing versions, role/model/effort facts, or release packaging. It is the machine-readable source of truth for v1.
+- Roles follow real repository boundaries. `backend_worker` is valid only for a real server/API/persistence/backend-service boundary.
+- Model defaults: orchestrator Sol/`medium`; frontend/backend/generic Terra/`medium`; test/review Luna/`high`; explorer/docs Luna/`medium`. Workers never self-escalate.
+- The delegation graph is exactly one level deep. Workers do not spawn or delegate to other workers.
+- Before writer dispatch, record the relevant worktree baseline and pre-existing changes. After completion, perform a changed-path audit against Allowed Write Paths and protected user changes.
+- Parallelize readers only when attribution stays reliable. Writers may run in parallel only in independently isolated execution roots/worktrees; all writers in a shared mutable checkout/worktree run serially.
+- `review_worker` is risk-based, not automatic. Worker completion is evidence, not acceptance.
+- Never revert or overwrite pre-existing user changes unless the user explicitly asks.
+- Do not commit, push, tag, publish, deploy, or create a GitHub Release unless explicitly requested.
+
+Repository verification:
+
+```text
+python -m unittest discover -s tests -p 'test_*.py' -v
+python scripts/verify.py
+bash -n scripts/install-codex.sh
+git diff --check
+```
+
+- Only the primary orchestrator may dispatch the seven canonical worker roles; do not dispatch an `orchestrator` child role.
+- Writers in a shared mutable checkout/worktree run serially; parallel writers require independently isolated execution roots/worktrees and separate baselines.

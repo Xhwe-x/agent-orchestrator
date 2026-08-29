@@ -1,10 +1,8 @@
 # Model Policy
 
-Reviewed against OpenAI GPT-5.6 documentation on 2026-08-28.
+Reviewed against official OpenAI GPT-5.6 documentation on 2026-08-29. Machine-readable role defaults live in `../manifest.toml`.
 
-## Fixed role split and defaults
-
-The model identities remain fixed. The effort values below are role-based defaults; they are not permission for a worker to change its own effort.
+## Role split and defaults
 
 | Agent | Model | Default reasoning effort |
 |---|---|---|
@@ -17,14 +15,22 @@ The model identities remain fixed. The effort values below are role-based defaul
 | `explorer_worker` | `gpt-5.6-luna` | `medium` |
 | `docs_worker` | `gpt-5.6-luna` | `medium` |
 
-Sol remains the primary orchestrator, Terra handles implementation, and Luna handles verification and read-only work. The orchestrator controls the single `medium → high → xhigh → max` ladder described in [orchestration rules](orchestration.md). Workers never self-escalate; they return an escalation signal for the orchestrator to assess. `max` is an exceptional final escalation, never a normal default.
+Sol is the primary orchestrator, Terra handles implementation, and Luna handles verification/read-only work. A default is a starting point, not a requirement to spend that effort on every task.
 
-## Effort guidance
+## Effort policy
 
-Start at the role default and use the lowest level that matches the actual complexity. Use `high` for ambiguity, failed in-scope work, or difficult implementation/verification. Use `xhigh` for architecture-level changes, cross-module migrations, shared high-blast-radius contracts, concurrency, or security-sensitive integration. Reserve `max` for unusually high failure cost or tightly coupled work after `high` and `xhigh` have proved insufficient.
+The orchestrator alone controls `medium → high → xhigh → max`, one level at a time. Workers never change their own model or effort. `max` is an exceptional final escalation, never a default.
 
-The orchestrator may retry or re-dispatch only after reviewing a worker's evidence. User and project instructions take precedence over these defaults, but a worker may not silently widen scope or select a higher effort.
+Use representative evaluations before changing defaults. OpenAI's GPT-5.6 guidance recommends testing the current effort and one level lower rather than assuming more reasoning is always better. Do not publish a Token-savings percentage without benchmark data.
 
 ## Maintenance
 
-GPT-5.6 supports `none`, `low`, `medium`, `high`, `xhigh`, and `max`. Model availability and Codex configuration can change; re-check official OpenAI documentation before changing model IDs or supported effort values.
+Current official model IDs are `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. GPT-5.6 supports `none`, `low`, `medium`, `high`, `xhigh`, and `max`; this project intentionally uses `medium` and `high` as defaults and reserves higher levels for orchestrator-controlled escalation.
+
+Official references:
+
+- https://developers.openai.com/api/docs/models
+- https://developers.openai.com/api/docs/guides/latest-model
+- https://developers.openai.com/api/docs/models/gpt-5.6-sol
+- https://developers.openai.com/api/docs/models/gpt-5.6-terra
+- https://developers.openai.com/api/docs/models/gpt-5.6-luna

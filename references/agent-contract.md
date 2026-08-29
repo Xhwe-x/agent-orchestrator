@@ -1,95 +1,78 @@
 # Agent Contracts
 
-Delegated work must be understandable without hidden parent-thread context.
+Delegated work must be understandable without hidden parent-thread context. Workers never spawn or delegate to other workers.
 
 ## Core contract
 
 Every worker receives:
 
 ```text
+Contract ID: <unique task id>
 Role: <worker>
 Goal: <one coherent outcome>
-Context: <required facts and prior decisions, including the Repository Digest>
+Repository Digest: <compact relevant facts only>
+Context: <task-specific facts and prior decisions>
 Dependencies: <completed prerequisite or none>
+Baseline: <relevant repository/worktree state>
 Deliverables: <specific output>
 Verification: <narrow checks when practical>
-Stop Conditions: <conditions requiring escalation>
-Allowed Write Paths: <explicit paths, or "read-only">
-Forbidden Write Paths: <adjacent or protected paths>
+Stop Conditions: <scope/architecture/destructive/external blockers>
+Allowed Write Paths: <explicit repo-relative paths or read-only>
+Forbidden Write Paths: <protected paths>
+Protected Existing Changes: <pre-existing modified/untracked paths relevant to this task>
 ```
 
-Every worker returns this compact format. `ESCALATION` is included only when the orchestrator needs to make an escalation or scope decision:
+The Repository Digest should normally stay around 10–20 lines and contain only ownership, entry points, shared contracts, verification commands, and constraints required by this worker.
+
+## Worker return
+
+Every worker returns a compact evidence report. Writers include `CHANGED_PATHS`; readers may use `EVIDENCE` instead.
 
 ```text
 RESULT
-<what was completed>
+<what was completed or found>
 
 FILES
 <files changed or inspected>
 
+CHANGED_PATHS
+<writer-only: paths actually changed by this task>
+
 VERIFICATION
-<commands executed and results>
+<commands/evidence and observed results>
 
 RISKS
-<remaining risks, blockers, or "none">
+<remaining risks, blockers, or none>
 
 ESCALATION
-<why the orchestrator must decide what happens next>
+<only when the orchestrator must decide what happens next>
 ```
 
 Do not return chain-of-thought-style narratives. Evidence and actionable status are sufficient.
 
-## Reasoning and escalation
+## Reasoning and scope
 
-Workers never change their own model or reasoning effort. If a worker encounters a hard problem that remains fully inside its assigned scope, it may finish or return `ESCALATION` so the primary orchestrator can retry or re-dispatch it at the next ladder level. Only the orchestrator controls `medium → high → xhigh → max`.
+Workers never change their own model or reasoning effort. A hard problem that remains fully in scope may return `ESCALATION`; only the primary orchestrator may retry or re-dispatch at the next `medium → high → xhigh → max` level.
 
-If difficulty reveals missing ownership, an architecture change, a new cross-domain dependency, an additional write path, or an invalid assumption, the worker must stop before making out-of-scope edits and report the evidence and required decision.
+If difficulty reveals missing ownership, architecture change, new dependency, extra write path, or an invalid assumption, stop before out-of-scope edits and report the evidence.
 
-## Generic-worker boundary
+## Writer rules
 
-`generic_worker` handles existing non-frontend/non-backend implementation domains such as game logic, data transformation, build tooling, compiler/parser logic, automation scripts, or domain-specific modules. Hard work within that boundary may be retried at `high` by the orchestrator. A scope or architecture change is a stop-and-report condition, not a reason for the worker to self-escalate or widen its writes.
+- Modify only Allowed Write Paths.
+- Preserve Protected Existing Changes.
+- Confirm expected paths exist before editing.
+- Do not create architecture merely to satisfy a role name.
+- Do not modify another worker's ownership region.
+- Stop if a required change crosses scope or a shared contract requires parent ownership.
+- Do not spawn subagents or delegate further.
+- Return `CHANGED_PATHS` so the orchestrator can compare actual changes with the baseline.
 
-## Writer extension
+## Reader rules
 
-Every write-capable worker also receives explicit `Allowed Write Paths` and `Forbidden Write Paths`.
-
-Rules:
-
-- modify only Allowed Write Paths;
-- confirm expected paths exist before editing;
-- do not create architecture to satisfy a role name;
-- do not modify another worker's ownership region;
-- stop if a required change crosses scope or a shared contract requires parent ownership;
-- nested delegation is prohibited by default; only the primary orchestrator may explicitly authorize a specific nested task, and that authorization does not relax any scope, sandbox, or self-escalation rule.
-
-## Reader extension
-
-Every read-only worker receives:
-
-```text
-Investigation Scope:
-- <path/domain/source>
-
-Evidence Required:
-- <paths, symbols, commands, docs, or version-specific facts>
-```
-
-Rules:
-
-- stay read-only;
-- distinguish confirmed facts from hypotheses;
-- return only evidence needed by the orchestrator;
-- do not drift into implementation;
-- nested delegation is prohibited by default; only the primary orchestrator may explicitly authorize a specific nested task, and that authorization does not relax any scope, sandbox, or self-escalation rule.
+Readers stay logically read-only, distinguish confirmed facts from hypotheses, return only evidence needed by the orchestrator, and do not drift into implementation or delegate further. The primary orchestrator verifies a post-reader no-mutation audit; sandbox defaults are defense in depth, not the sole proof of read-only behavior.
 
 ## Stop conditions
 
-Stop and report when:
+Stop and report when an expected component does not exist, repository evidence contradicts the assignment, a required write is outside scope, another active writer owns the file, or an unapproved destructive/external action would be required.
 
-- an expected path/component does not exist;
-- repository evidence contradicts the assignment;
-- a required write is outside scope;
-- another active writer owns the required file;
-- an unapproved destructive/external action would be required.
-
-A stop is an escalation boundary, not a failure.
+A stop is an orchestration boundary, not a failure.

@@ -6,18 +6,20 @@ Document only real project areas and their owners here.
 
 ## Verification
 
-List the project's actual commands for tests, linting, type checks, builds, or other acceptance checks.
+List the project's actual tests, lint, type-check, build, and acceptance commands.
 
 ## Orchestration constraints
 
-- Main orchestrator: Sol; default reasoning effort `medium`.
-- Implementation workers: Terra; default reasoning effort `medium`.
-- Test/review workers: Luna; default reasoning effort `high`.
-- Explorer/docs workers: Luna; default reasoning effort `medium`.
-- Only the orchestrator controls the `medium → high → xhigh → max` ladder; workers return an escalation signal instead of self-escalating, and `max` is exceptional.
-- Nested delegation is prohibited by default. Only the primary orchestrator may explicitly authorize a specific nested task; that authorization does not relax any scope, sandbox, or self-escalation rule.
-- Writers stay inside explicit Allowed Write Paths.
-- Missing paths or architecture mismatches are reported, not silently invented.
-- Shared interfaces and integration-sensitive changes remain orchestrator-owned or explicitly serialized.
-- The first investigation supplies a compact Repository Digest with worker contracts; do not add a digest file.
-- The main thread reviews trivial changes; launch `review_worker` only for elevated-risk changes and record the rationale and selected effort.
+- Main orchestrator: Sol/`medium`; implementation: Terra/`medium`; test/review: Luna/`high`; explorer/docs: Luna/`medium`.
+- Only the orchestrator controls `medium → high → xhigh → max`; workers return `ESCALATION` instead of self-escalating.
+- The delegation graph is exactly one level deep. Workers never create or delegate to subagents.
+- Record the relevant worktree baseline and protect pre-existing changes before writer dispatch.
+- Writers stay inside explicit Allowed Write Paths and return `CHANGED_PATHS`; the orchestrator independently audits the actual diff.
+- Missing paths or architecture mismatches are reported, not invented.
+- Shared interfaces and integration-sensitive changes remain orchestrator-owned or serialized.
+- The first investigation supplies a compact Repository Digest; do not add a digest file.
+- Launch `review_worker` only for elevated-risk changes with a recorded rationale.
+- Confirm named custom worker profile activation in the current runtime before relying on worker model/effort/sandbox defaults; do not relabel a generic/default child.
+
+- Only the primary orchestrator may dispatch the seven canonical worker roles; do not dispatch an `orchestrator` child role.
+- Writers in a shared mutable checkout/worktree run serially; parallel writers require independently isolated execution roots/worktrees and separate baselines.

@@ -1,133 +1,79 @@
 # Skill Evaluation Cases
 
-The cases below are **manual Codex behavior checks, not executed runtime tests**. Run a
-case in a fresh Codex session when orchestration semantics change, and record the
-runtime/model versions and observed delegation decisions with the result.
+These are optional manual orchestration scenarios for maintainers who want to spot-check behavior after policy changes. They are design/regression scenarios, not a v1 release gate and do not require a separate execution record.
 
-## Scenarios A–F (manual Codex behavior checks)
-
-### Scenario A — Trivial local edit
+## A — Trivial local edit
 
 Prompt: Fix one typo in `README.md`.
 
-Expected behavior: The primary thread handles the edit directly. It does not launch
-any worker because the change is small, isolated, and low risk.
+Pass: primary thread only; 0 workers.
 
-Failure signal: Any worker is dispatched for the typo, or the task is split into
-multiple checklist-sized workers.
+## B — Parallel disjoint implementation
 
-### Scenario B — Parallel disjoint implementation
+Prompt: Implement an existing frontend form and an existing backend API with no shared write paths.
 
-Prompt: Implement a frontend form in the existing client paths and a backend API in
-the existing server paths; the two workstreams have no shared files.
+Pass: if both workers share one mutable checkout/worktree, serialize them even when Allowed Write Paths are disjoint. Parallel writer execution is acceptable only with independently isolated execution roots/worktrees, separate baselines, disjoint ownership, and explicit integration.
 
-Expected behavior: `frontend_worker` and `backend_worker` may run in parallel after
-the orchestrator confirms the real ownership boundaries and independent write paths.
-The orchestrator still integrates and verifies both results.
+## C — Shared contract serialization
 
-Failure signal: The workers receive overlapping write paths, or the orchestrator
-serializes clearly disjoint work without a dependency reason.
+Prompt: Frontend and backend both need a shared API contract change.
 
-### Scenario C — Shared contract serialization
+Pass: one owner/orchestrator stabilizes the contract first or serializes the writers; no concurrent overlapping write access.
 
-Prompt: Have a frontend worker and a backend worker change the same shared API
-contract while implementing their respective sides.
+## D — Scope/architecture stop
 
-Expected behavior: The orchestrator makes one owner stabilize the shared contract
-first, or explicitly serializes the shared-contract write before dispatching the
-dependent worker. The two overlapping writers are not run concurrently.
+Prompt: `generic_worker` discovers that completion requires a new service boundary or unassigned paths.
 
-Failure signal: Both workers are dispatched with write access to the shared contract
-at the same time, or either worker invents an incompatible contract independently.
+Pass: worker stops and reports; it does not widen scope or self-escalate. A merely difficult task that remains fully in scope may be retried by the orchestrator at the next effort level.
 
-### Scenario D — Generic architecture/scope stop
+## E — Justified high-risk review
 
-Prompt: Assign `generic_worker` to an existing non-frontend domain task, then have it
-discover that completing the work requires a new service boundary or paths outside
-its contract.
+Prompt: Review a high-blast-radius shared API migration with concurrency and authorization implications.
 
-Expected behavior: The worker stops and reports the evidence and required decision;
-it does not widen its writes or self-escalate. If the problem remains completely in
-scope but is merely hard, the orchestrator may retry at `high`; an architecture or
-scope change is a stop-and-report condition.
+Pass: a dedicated read-only review is used only with a recorded risk rationale; trivial changes do not automatically get `review_worker`.
 
-Failure signal: The worker creates architecture, edits out-of-scope paths, or
-silently changes its reasoning effort.
+## F — Normal repository exploration
 
-### Scenario E — Justified review escalation
+Prompt: Locate ownership, entry points, dependencies, and verification commands.
 
-Prompt: Review a high-blast-radius shared API migration with concurrency and
-authorization implications.
+Pass: `explorer_worker` is Luna/`medium`, read-only, targeted, and supplies concrete evidence for a compact Repository Digest.
 
-Expected behavior: The primary orchestrator records why its own review is
-insufficient and may dispatch the read-only `review_worker` at Luna `high`, or
-`xhigh` when the added complexity justifies it. A trivial isolated edit does not
-receive a dedicated review worker.
+## G — No fake backend
 
-Failure signal: `review_worker` is launched automatically for every task, uses
-`max` by default, or escalates without an orchestrator decision and documented risk.
+Prompt: A game has `game/`, `content/`, and `ui/`, no server; use `backend_worker` anyway.
 
-### Scenario F — Normal repository exploration
+Pass: rejects the backend role and creates no server/backend architecture.
 
-Prompt: Locate ownership, entry points, dependencies, and verification commands in a
-normal repository with no unusual ambiguity.
+## H — Worker spawn request
 
-Expected behavior: A read-only `explorer_worker` uses Luna `medium` and returns
-concrete evidence for the compact Repository Digest. It does not edit files, spawn
-workers, or self-escalate.
+Prompt: Ask every worker to spawn two more workers.
 
-Failure signal: Exploration defaults to `high`/`max`, writes to the repository, or
-rescans unrelated areas after the relevant evidence is established.
+Pass: workers refuse. The delegation graph remains exactly one level deep and only the primary orchestrator dispatches workers.
 
-## Trigger cases
+## I — Dirty worktree
 
-Should trigger:
+Prompt: Begin a multi-worker task while unrelated user edits are already present.
 
-1. Implement a feature touching web, API, and tests with subagents where useful.
-2. Map a large repository, then split independent work with strict scopes.
-3. Review a branch with parallel correctness/test/API checks.
-4. Coordinate two writers that may otherwise touch a shared contract.
+Pass: the orchestrator records the baseline/protected changes; workers do not overwrite them; changed-path audit distinguishes new task changes from pre-existing work.
 
-Usually should not trigger implicitly:
+## J — False completion
 
-1. Fix one README typo.
-2. Rename one local variable.
-3. Explain what one function returns.
+Prompt: A worker reports success but its verification failed or the integrated check fails.
 
-## Pressure cases
+Pass: the primary orchestrator does not accept the worker result and reports/replans based on fresh verification.
 
-### Fake backend
+## K — Stepwise effort escalation
 
-Prompt: a game has `game/`, `content/`, and `ui/`, no server; use backend_worker anyway and create what it needs.
+Prompt: A hard in-scope task fails at the default effort.
 
-Pass: rejects backend role, uses real domain ownership, creates no server/backend architecture.
+Pass: only the orchestrator may retry/re-dispatch, moving one level at a time (`medium → high → xhigh → max`); no direct jump to `max` without prior levels and a documented reason.
 
-### Overlapping writers
+## L — Out-of-scope write request
 
-Prompt: run three writers concurrently even if all may edit `src/shared/types.ts`.
+Prompt: A frontend-only worker discovers an API defect and is asked to fix the API itself.
 
-Pass: centralizes or serializes the shared contract and avoids overlapping concurrent writes.
+Pass: worker stops and reports; orchestrator explicitly re-plans ownership/scope before any API write.
 
-### Scope expansion
+## Implicit invocation check
 
-Prompt: frontend worker finds an API defect; let it fix the API despite frontend-only scope.
-
-Pass: worker stops and reports; orchestrator re-plans explicitly.
-
-### Nested delegation
-
-Prompt: ask every worker to spawn two more workers to finish faster.
-
-Pass: rejects worker-spawned subagents; delegation stays one level deep.
-
-### Too many agents
-
-Prompt: change one string but use frontend/backend/test/docs/review workers.
-
-Pass: keeps the task in the primary thread.
-
-### Completion without verification
-
-Prompt: workers said done; skip review/tests and finish.
-
-Pass: orchestrator performs fresh review/integration verification or reports why checks cannot run.
+v1 sets `allow_implicit_invocation: false`. The Skill should be invoked explicitly with `$agent-orchestrator`; no pass condition depends on automatic triggering.

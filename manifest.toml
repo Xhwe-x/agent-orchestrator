@@ -1,0 +1,126 @@
+[project]
+name = "agent-orchestrator"
+version = "1.0.0"
+python_min = "3.11"
+
+[policy]
+delegation_depth = 1
+allow_implicit_invocation = false
+effort_ladder = ["medium", "high", "xhigh", "max"]
+
+[release]
+archive = "agent-orchestrator-v1.0.0.zip"
+root = "agent-orchestrator-v1.0.0"
+digest_excludes = ["ACCEPTANCE.md"]
+executable = ["scripts/install-codex.sh"]
+include = [
+  ".gitattributes",
+  ".gitignore",
+  ".github/workflows/validate.yml",
+  ".codex/agents/docs-worker.toml",
+  ".codex/agents/test-worker.toml",
+  "ACCEPTANCE.md",
+  "AGENTS.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "LICENSE",
+  "README.md",
+  "README.zh-CN.md",
+  "SECURITY.md",
+  "SKILL.md",
+  "agents/openai.yaml",
+  "examples/game-project.md",
+  "examples/web-project.md",
+  "manifest.toml",
+  "references/agent-contract.md",
+  "references/codex.md",
+  "references/models.md",
+  "references/orchestration.md",
+  "requirements-dev.txt",
+  "scripts/install-codex.ps1",
+  "scripts/install-codex.sh",
+  "scripts/verify.py",
+  "templates/AGENTS.global.md",
+  "templates/AGENTS.project.md",
+  "templates/codex-agents/backend-worker.toml",
+  "templates/codex-agents/docs-worker.toml",
+  "templates/codex-agents/explorer-worker.toml",
+  "templates/codex-agents/frontend-worker.toml",
+  "templates/codex-agents/generic-worker.toml",
+  "templates/codex-agents/review-worker.toml",
+  "templates/codex-agents/test-worker.toml",
+  "templates/codex-config.toml",
+  "tests/evals.md",
+  "tests/test_installer.py",
+  "tests/test_release.py",
+  "tests/test_v1_policy.py",
+]
+
+[compatibility]
+legacy_orchestrator_sha256 = [
+  "8e99ae7e4374cfc7be5401c906c4c38439fb55f6a4455983da8ad5ef6e85157c",
+  "10b63b98f70d15292f70175094e33cec13d7fbf0d7fba5c9d12f223420f2c250",
+]
+
+[[roles]]
+name = "orchestrator"
+dispatchable = false
+model = "gpt-5.6-sol"
+effort = "medium"
+sandbox = "workspace-write"
+
+[[roles]]
+name = "frontend_worker"
+dispatchable = true
+profile = "templates/codex-agents/frontend-worker.toml"
+model = "gpt-5.6-terra"
+effort = "medium"
+sandbox = "workspace-write"
+
+[[roles]]
+name = "backend_worker"
+dispatchable = true
+profile = "templates/codex-agents/backend-worker.toml"
+model = "gpt-5.6-terra"
+effort = "medium"
+sandbox = "workspace-write"
+
+[[roles]]
+name = "generic_worker"
+dispatchable = true
+profile = "templates/codex-agents/generic-worker.toml"
+model = "gpt-5.6-terra"
+effort = "medium"
+sandbox = "workspace-write"
+
+[[roles]]
+name = "test_worker"
+dispatchable = true
+profile = "templates/codex-agents/test-worker.toml"
+model = "gpt-5.6-luna"
+effort = "high"
+sandbox = "workspace-write"
+
+[[roles]]
+name = "review_worker"
+dispatchable = true
+profile = "templates/codex-agents/review-worker.toml"
+model = "gpt-5.6-luna"
+effort = "high"
+sandbox = "read-only"
+
+[[roles]]
+name = "explorer_worker"
+dispatchable = true
+profile = "templates/codex-agents/explorer-worker.toml"
+model = "gpt-5.6-luna"
+effort = "medium"
+sandbox = "read-only"
+
+[[roles]]
+name = "docs_worker"
+dispatchable = true
+profile = "templates/codex-agents/docs-worker.toml"
+model = "gpt-5.6-luna"
+effort = "medium"
+sandbox = "read-only"

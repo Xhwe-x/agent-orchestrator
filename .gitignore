@@ -1,4 +1,4 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-agent-orchestrator-v0.3-token-aware.zip
+agent-orchestrator-v*.zip

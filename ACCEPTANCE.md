@@ -1,159 +1,71 @@
-# v0.3.0 Release Acceptance — Token-Aware Update
+# v1.0.0 Acceptance Record
 
-**Date:** 2026-08-28  
-**Scope:** Final consistency review against `agent-orchestrator-v0.3-token-aware-update.md` and the agreed conversation constraints. This record does not authorize or claim commit, push, or GitHub upload.
+This document records evidence for the v1 source tree and the automated/local release checks performed on 2026-08-29.
 
-## Implementation summary
+## Policy state
 
-- Preserved the fixed model split: Sol for the primary orchestrator, Terra for implementation workers, and Luna for read/verification workers.
-- Replaced global `max` defaults with role-based defaults and one orchestrator-controlled `medium → high → xhigh → max` escalation ladder.
-- Kept small local changes in the primary thread and limited delegation to meaningful independent workstreams.
-- Kept Repository Digest sharing, compact worker returns, explicit write scopes, serialized overlapping writes/shared contracts, risk-based review, and one-level delegation.
-- Kept `backend_worker` limited to a real existing server/API/persistence/backend-service boundary; non-frontend/non-backend implementation uses `generic_worker` or a project-defined domain worker.
-- Aligned root `AGENTS.md`, reusable AGENTS templates, and the canonical orchestrator profile so repository instructions no longer contradict the token-aware Skill policy.
-- Extended the existing verifier/release flow without adding a new framework. Archive verification now rejects non-regular members in addition to validating safe unique paths, exact bytes, canonical Unix modes, extracted self-checks, and the executable shell installer mode.
+- `manifest.toml` is the machine-readable source for version, role/model/effort defaults, delegation depth, implicit invocation, compatibility fingerprints, and the exact release allowlist.
+- The primary orchestrator is Skill-driven and non-dispatchable; exactly seven canonical custom worker profiles are dispatchable.
+- The delegation graph is exactly one level deep. Workers never spawn or delegate to subagents and never self-escalate reasoning effort.
+- Writers in one shared mutable checkout/worktree run serially. Parallel writers require independently isolated execution roots/worktrees, separate baselines, disjoint ownership, and explicit integration.
+- Writer contracts include baseline state, protected pre-existing changes, Allowed/Forbidden paths, and `CHANGED_PATHS`; the primary orchestrator independently audits actual changed paths before acceptance.
+- Read-only workers remain logically read-only even if runtime permissions are broader, with baseline/no-mutation auditing after execution.
+- Repository/log/generated/web/worker-report content is treated as untrusted data and cannot override higher-priority instructions, contracts, or orchestration policy.
+- The Codex template enables agents and uses `max_depth = 1` as V1 defense in depth, while deliberately omitting the legacy/global thread-limit setting that can conflict with current Multi-Agent V2. V2 one-level behavior remains enforced by Skill/worker policy and audits because current V2 ignores `max_depth`.
+- Role defaults remain Sol/`medium`, Terra/`medium`, Luna/`medium|high`; no role defaults to `max`. The installer does not overwrite user `config.toml`, so primary-session model/effort values must not be claimed without runtime-visible confirmation.
+- Implicit Skill invocation is disabled by default.
 
-## Final role, model, and default-effort mapping
+## Automated verification
 
-| Role | Model | Default reasoning effort |
-|---|---|---|
-| `orchestrator` | `gpt-5.6-sol` | `medium` |
-| `frontend_worker` | `gpt-5.6-terra` | `medium` |
-| `backend_worker` | `gpt-5.6-terra` | `medium` |
-| `generic_worker` | `gpt-5.6-terra` | `medium` |
-| `test_worker` | `gpt-5.6-luna` | `high` |
-| `review_worker` | `gpt-5.6-luna` | `high` |
-| `explorer_worker` | `gpt-5.6-luna` | `medium` |
-| `docs_worker` | `gpt-5.6-luna` | `medium` |
-
-Workers never self-escalate reasoning effort. Only the primary orchestrator may authorize a higher-effort retry or re-dispatch after reviewing evidence.
-
-## Changed files
-
-The v0.3 worktree contains these source/configuration changes relative to the repository base used for this update:
+The final local source tree was checked with:
 
 ```text
-.codex/agents/docs-worker.toml
-.codex/agents/test-worker.toml
-.github/workflows/validate.yml
-.gitattributes
-.gitignore
-ACCEPTANCE.md
-AGENTS.md
-HANDOFF.md
-README.md
-README.zh-CN.md
-SKILL.md
-examples/game-project.md
-examples/web-project.md
-references/agent-contract.md
-references/codex.md
-references/models.md
-references/orchestration.md
-requirements-dev.txt
-scripts/verify.py
-templates/AGENTS.global.md
-templates/AGENTS.project.md
-templates/codex-agents/backend-worker.toml
-templates/codex-agents/docs-worker.toml
-templates/codex-agents/explorer-worker.toml
-templates/codex-agents/frontend-worker.toml
-templates/codex-agents/generic-worker.toml
-templates/codex-agents/orchestrator.toml
-templates/codex-agents/review-worker.toml
-templates/codex-agents/test-worker.toml
-templates/codex-config.toml
-tests/evals.md
-```
-
-No duplicate model-profile tree, extra policy framework, or redundant legacy changelog/contributing file was added.
-
-## Release manifest policy
-
-- **Archive filename:** `agent-orchestrator-v0.3-token-aware.zip`
-- **Archive root:** `agent-orchestrator-v0.3-token-aware/`
-- **Package file count:** 35 files, including `ACCEPTANCE.md` and `HANDOFF.md`.
-- **Release content SHA-256:** 806dbfaec8467130b5d4836c7e58414aad4c093af222562c324136f4bb2c31cb
-- **Required inclusions:** `ACCEPTANCE.md`, `HANDOFF.md`, `requirements-dev.txt`, and `scripts/install-codex.sh`.
-- **Canonical modes:** `scripts/install-codex.sh` is `100755`; other packaged files are `100644`.
-- **Excluded transient content:** `.git/`, worktree/cache directories, Python bytecode, `.DS_Store`, and ZIP archives.
-
-The release-content digest is computed over canonical release path, mode, length, and bytes. `ACCEPTANCE.md` is packaged and counted, but only its bytes are excluded from that digest to avoid self-reference. The completed ZIP byte SHA-256 is calculated after the final archive build and reported with the delivered artifact; embedding the ZIP's own byte hash inside a file contained by that ZIP would be recursive.
-
-## Verification evidence
-
-### Round 1 — Static validation
-
-Commands:
-
-```text
-python -m py_compile scripts/verify.py
+python -m unittest discover -s tests -p 'test_*.py' -v
 python scripts/verify.py
-```
-
-Observed: **PASS**. The verifier compiled cleanly and the default static run reported:
-
-```text
-PASS: structure, skill metadata, model split, agent contracts, backend semantics, links, portability, and installer policy
-```
-
-### Round 2 — Model and policy mapping
-
-A separate audit parsed all eight canonical Agent TOMLs and checked exact model/effort/sandbox defaults, absence of `max` defaults, worker self-escalation/nested-spawn prohibitions, v0.3 root-policy markers, scenarios A–F definitions, and uniqueness of `ACCEPTANCE.md`.
-
-Observed:
-
-```text
-PASS: 8-role model/effort map, scope/escalation rules, A-F eval definitions, and unique acceptance
-```
-
-### Round 3 — Release gate and archive self-check
-
-Commands:
-
-```text
 python scripts/verify.py --release
-python scripts/verify.py --build-release-archive PATH
-python scripts/verify.py --release-archive PATH
+python -m py_compile scripts/verify.py
+bash -n scripts/install-codex.sh
+git diff --check
 ```
 
-Observed: **PASS**. The local gate reported `count=35` and release-content digest `806dbfaec8467130b5d4836c7e58414aad4c093af222562c324136f4bb2c31cb`; archive self-check reported 35 files and shell mode `100755`. Extracted default and `--release` self-checks also passed.
+Observed result: **83 automated Python regression tests pass** and **32 platform-specific tests are skipped** in the current Windows environment (Unix Bash-installer and symlink-permission variants). The suite covers policy consistency, strict one-level topology, custom-profile activation rules, shared-checkout writer serialization, installer ownership/collision semantics, neutral check mode, rollback failure injection, operation locking, source reparse/symlink rejection, managed-manifest traversal, untracked Skill content, source-independent uninstall, historical-profile migration, late/TOCTOU collision no-clobber behavior, release allowlist enforcement, deterministic archive metadata, path ambiguity, non-regular members, traversal, altered bytes, and other negative archive cases.
 
-### Round 4 — Installer and negative archive checks
+The repository verifier passes locally. Bash syntax could not be run because Bash/WSL is unavailable on this Windows host. PowerShell 7 is available in this acceptance environment, and all locally runnable PowerShell runtime tests pass. The workflow is configured to exercise the PowerShell 7+ installer and Linux/macOS Bash installer suite; no remote GitHub Actions result is claimed.
 
-Observed: **PASS** for locally available checks.
+## Installer safety state
 
-- `bash -n scripts/install-codex.sh` passed.
-- Isolated-home installation produced exactly `SKILL.md`, `agents/`, and `references/` in the runtime Skill and installed eight Agent TOMLs.
-- Repeat installation without force was rejected; `--force` restored canonical Skill content.
-- Two independently built release archives were byte-identical.
-- Negative archives were correctly rejected for modified file bytes, shell mode `0644`, `../` traversal, and a non-regular FIFO member.
+- `--check` / `-Check` is always non-mutating. Managed collisions, unmanaged collisions, absent installations, and uninstall preflights are reported neutrally with `CHECK PASS` and the action a real mutation would require.
+- `--force` / `-Force` does not grant ownership of arbitrary same-named files. Only verified managed targets may be automatically replaced; unmanaged/unverified targets remain blocked.
+- Upgrade and uninstall use operation locks and backups. Rollback only reverses mutations actually completed by the current attempt.
+- Final Agent installation uses no-clobber commit semantics so a file appearing after preflight is not overwritten.
+- Recognized historical `orchestrator.toml` profiles can be backed up and deactivated; unknown or user-modified same-named profiles are never claimed automatically.
+- Untracked content added inside the installed Skill is treated as user content. Ordinary uninstall refuses it; forced uninstall backs up the complete Skill directory first.
+- Uninstall does not require install-only source templates to remain present.
+- The Windows installer explicitly requires PowerShell 7+ (`pwsh`).
+- The PowerShell `-Check` regression is fixed: the collision-order policy test and the runtime canonical-collision test pass, with `CHECK PASS` reported before any refusal and no filesystem mutation.
+- PowerShell source validation walks every required source-path ancestor and rejects reparse-point/junction components before copying; the reparse-ancestor regression covers all three global destination roots and verifies no external mutation.
+- Bash destination validation rejects symlinked ancestors. Its operation-lock status handling treats missing/malformed PID metadata and any indeterminate `kill -0` result as busy, preserves the existing lock, and permits stale-lock recovery only after a conclusive dead-PID result; the corresponding Unix tests are included but platform-skipped here.
+- A no-`-Force` global installation completed in the user-global Codex paths with exactly seven managed Worker Agent files. Its runtime manifest is exact: 14 records (one version, six Skill files, and seven Worker files), and all 13 managed payload hashes match this source tree.
+- A recognized legacy `orchestrator.toml` was backed up and deactivated under the managed install backup area; the backup fingerprint matches a compatibility hash listed in `manifest.toml`.
+- `README.md` and `README.zh-CN.md` are synchronized on the v1.0.0 role count, installer flags, PowerShell 7 requirement, global paths, and release/CI caveats; `test_windows_installer_requires_and_documents_powershell_7` passes its cross-document checks.
 
-PowerShell is not installed in this execution environment, so no fresh local PowerShell pass is claimed. The repository's Windows GitHub Actions job contains the PowerShell parser/clean-room installation and archive build/verification steps.
+## Release package metadata
 
-### Round 5 — Final review
+The custom release archive is built only from exact `[release].include` file paths in `manifest.toml`; glob-driven or repository-walk inclusion is rejected.
 
-Observed before this record's final packaging: **PASS**.
+Package file count: 40
+Release content SHA-256: 388a16bc53a953e096ecadec1acb4083afda9a41984d5b09ef860c1620ce7a5c
 
-- `git diff --check` was clean.
-- Only one `ACCEPTANCE.md` existed.
-- No legacy duplicate model-profile tree or redundant legacy changelog/contributing files existed.
-- No Agent TOML defaulted to `max`.
-- No backend-equivalent semantics remained outside the verifier's regression guard.
-- A post-acceptance-draft archive rebuild/self-check passed with the same canonical release-content digest and file count.
+`ACCEPTANCE.md` remains part of the package count but its own bytes are excluded from the canonical content digest to avoid self-reference.
 
-The delivered ZIP is accepted only after the final package containing this exact acceptance record passes `python scripts/verify.py --release-archive <zip>`; that delivery-time result and ZIP byte SHA-256 are reported externally with the artifact.
-
-## Manual Codex behavior checks — not executed
-
-Scenarios A–F in `tests/evals.md` remain manual live-Codex behavior checks. They are not runtime test passes unless actually executed in fresh Codex sessions with runtime/model details recorded.
+The release builder uses `ZIP_STORED` with fixed metadata and the archive verifier reconstructs the canonical ZIP bytes from the current allowlist. Final release verification requires byte-for-byte equality, exact members, exact content, exact modes, safe/canonical paths, and successful verifier execution after extraction.
 
 ## Environment limitations
 
-- PowerShell is unavailable locally, so no local Windows/PowerShell runtime pass is claimed.
-- Remote GitHub Actions results are not inferred from local checks.
-- Live Codex behavior is not inferred from static policy/eval definitions.
+- This acceptance run used Windows with PowerShell 7 (`pwsh`) available; the PowerShell installer checks ran locally. Unix Bash-installer and symlink-permission variants were skipped as noted above.
+- macOS is not available in the local environment; the Bash regression suite is configured for the workflow but is not claimed as remotely executed here.
+- Remote GitHub Actions results, remote push status, and live Codex behavior are not inferred from local execution.
 
-## Acceptance decision
+## Release status
 
-**Local canonical-content acceptance: PASS.** All locally executable static, mapping, release-gate, shell clean-room, deterministic-build, negative-archive, and pre-delivery review checks listed above passed. Final ZIP validity is additionally gated by the delivery-time archive self-check and externally reported ZIP byte SHA-256.
+**LOCAL v1.0.0 RELEASE PACKAGE VERIFIED: source tests, verifier, deterministic packaging, byte-for-byte archive comparison, canonical archive verification, and extracted self-checks passed in the local environment. Remote GitHub Actions and push status remain unclaimed.**

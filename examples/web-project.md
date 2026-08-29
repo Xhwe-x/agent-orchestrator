@@ -18,4 +18,4 @@ Plan:
 - `test_worker` (Luna/high) writes only the assigned test paths after the contract is stable.
 - `review_worker` (Luna/high) audits the integrated diff read-only only when the change is elevated-risk and the orchestrator records the rationale.
 
-Frontend and backend may run in parallel only after the shared contract is stable and their write scopes are disjoint. The orchestrator performs final verification.
+Frontend and backend may run in parallel only after the shared contract is stable, their write scopes are disjoint, **and each writer has an independently isolated worktree/execution root with its own baseline**. In a shared mutable checkout they run serially. The orchestrator performs final verification.

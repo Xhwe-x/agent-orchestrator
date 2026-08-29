@@ -4,110 +4,184 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  linux:
+  static:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
         with:
-          python-version: "3.13"
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
       - name: Install verifier dependencies
         run: python -m pip install --disable-pip-version-check --no-input -r requirements-dev.txt
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Verify package
         run: python scripts/verify.py
       - name: Compile verifier
         run: python -m py_compile scripts/verify.py
-      - name: Verify local release gate
-        run: python scripts/verify.py --release
-      - name: Build release archive
-        run: python scripts/verify.py --build-release-archive "$RUNNER_TEMP/agent-orchestrator-v0.3-token-aware.zip"
-      - name: Verify release archive
-        run: python scripts/verify.py --release-archive "$RUNNER_TEMP/agent-orchestrator-v0.3-token-aware.zip"
+      - name: Check whitespace
+        run: git diff --check
+
+  linux_install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
       - name: Check shell syntax
         run: bash -n scripts/install-codex.sh
-      - name: Clean-room installer test
-        run: |
-          export AGENT_ORCHESTRATOR_HOME="$RUNNER_TEMP/agent-orchestrator-home"
-          ./scripts/install-codex.sh
-          skill="$AGENT_ORCHESTRATOR_HOME/.agents/skills/agent-orchestrator"
-          agents="$AGENT_ORCHESTRATOR_HOME/.codex/agents"
-          test -f "$skill/SKILL.md"
-          actual_layout="$(find "$skill" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)"
-          expected_layout=$'SKILL.md\nagents\nreferences'
-          test "$actual_layout" = "$expected_layout"
-          for dev_only in examples tests scripts templates .github; do
-            test ! -e "$skill/$dev_only"
-          done
-          agent_sources=(templates/codex-agents/*.toml)
-          test "${#agent_sources[@]}" -eq 8
-          test "$(find "$agents" -mindepth 1 -maxdepth 1 -type f -name '*.toml' | wc -l)" -eq 8
-          for source in "${agent_sources[@]}"; do
-            test -f "$agents/$(basename "$source")"
-          done
-          if ./scripts/install-codex.sh; then
-            echo "repeat install unexpectedly succeeded" >&2
-            exit 1
-          fi
-          echo "clean-room mutation" >> "$skill/SKILL.md"
-          ./scripts/install-codex.sh --force
-          cmp -s SKILL.md "$skill/SKILL.md"
-          for source in "${agent_sources[@]}"; do
-            test -f "$agents/$(basename "$source")"
-          done
+      - name: Run shell installer regression tests
+        run: python -m unittest tests.test_installer -v
 
-  windows:
-    runs-on: windows-latest
+  macos_install:
+    runs-on: macos-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
         with:
-          python-version: "3.13"
-      - name: Install verifier dependencies
-        shell: pwsh
-        run: python -m pip install --disable-pip-version-check --no-input -r requirements-dev.txt
-      - name: Verify package
-        run: python scripts/verify.py
-      - name: Compile verifier
-        run: python -m py_compile scripts/verify.py
-      - name: Verify local release gate
-        run: python scripts/verify.py --release
-      - name: Build release archive
-        shell: pwsh
-        run: python scripts/verify.py --build-release-archive (Join-Path $env:RUNNER_TEMP "agent-orchestrator-v0.3-token-aware.zip")
-      - name: Verify release archive
-        shell: pwsh
-        run: python scripts/verify.py --release-archive (Join-Path $env:RUNNER_TEMP "agent-orchestrator-v0.3-token-aware.zip")
-      - name: Parse and test PowerShell installer
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Check shell syntax
+        run: bash -n scripts/install-codex.sh
+      - name: Run shell installer regression tests
+        run: python -m unittest tests.test_installer -v
+
+  windows_install:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Parse and exercise PowerShell installer
         shell: pwsh
         run: |
           [void][scriptblock]::Create((Get-Content -Raw scripts/install-codex.ps1))
-          $env:AGENT_ORCHESTRATOR_HOME = Join-Path $env:RUNNER_TEMP "agent-orchestrator-home"
+          $env:AGENT_ORCHESTRATOR_HOME = Join-Path $env:RUNNER_TEMP "agent orchestrator 测试 home"
+          & .\scripts\install-codex.ps1 -Check
+          if (Test-Path (Join-Path $env:AGENT_ORCHESTRATOR_HOME ".agents")) { throw "-Check mutated the target home" }
+          $absentUninstallCheck = (& .\scripts\install-codex.ps1 -Uninstall -Check | Out-String)
+          if ($absentUninstallCheck -notmatch "CHECK PASS" -or $absentUninstallCheck -notmatch "no managed installation") { throw "absent uninstall preflight was not neutral" }
+
+          $stateRoot = Join-Path $env:AGENT_ORCHESTRATOR_HOME ".agent-orchestrator"
+          New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
+          $lockPath = Join-Path $stateRoot "operation.lock"
+          $heldLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+          try {
+            $lockBlocked = $false
+            try { & .\scripts\install-codex.ps1 } catch { $lockBlocked = $true }
+            if (-not $lockBlocked) { throw "mutating install ignored an active operation lock" }
+          } finally {
+            $heldLock.Dispose()
+          }
+
+          $collisionDir = Join-Path $env:AGENT_ORCHESTRATOR_HOME ".codex\agents"
+          New-Item -ItemType Directory -Force -Path $collisionDir | Out-Null
+          $collision = Join-Path $collisionDir "frontend-worker.toml"
+          Set-Content -LiteralPath $collision -Value "user-owned" -NoNewline
+          $checkOutput = (& .\scripts\install-codex.ps1 -Check | Out-String)
+          if ($checkOutput -notmatch "CHECK PASS" -or $checkOutput -notmatch "unmanaged" -or $checkOutput -notmatch "blocked" -or $checkOutput -notmatch "will not replace") { throw "-Check unmanaged collision preview was not neutral/informative" }
+          $unmanagedUninstallCheck = (& .\scripts\install-codex.ps1 -Uninstall -Check | Out-String)
+          if ($unmanagedUninstallCheck -notmatch "CHECK PASS" -or $unmanagedUninstallCheck -notmatch "no managed installation" -or $unmanagedUninstallCheck -notmatch "unmanaged") { throw "unmanaged uninstall preflight was not neutral/informative" }
+          if ((Get-Content -Raw -LiteralPath $collision) -ne "user-owned") { throw "-Check mutated collision file" }
+          $failed = $false
+          try { & .\scripts\install-codex.ps1 } catch { $failed = $true }
+          if (-not $failed) { throw "partial collision unexpectedly installed" }
+          if ((Get-Content -Raw -LiteralPath $collision) -ne "user-owned") { throw "collision file was modified" }
+          if (Test-Path (Join-Path $env:AGENT_ORCHESTRATOR_HOME ".agents\skills\agent-orchestrator")) { throw "partial collision wrote the Skill" }
+          Remove-Item -Recurse -Force (Join-Path $env:AGENT_ORCHESTRATOR_HOME ".codex")
+
           & .\scripts\install-codex.ps1
           $skill = Join-Path $env:AGENT_ORCHESTRATOR_HOME ".agents\skills\agent-orchestrator"
           $agents = Join-Path $env:AGENT_ORCHESTRATOR_HOME ".codex\agents"
-          if (-not (Test-Path (Join-Path $skill "SKILL.md"))) { throw "Skill install missing" }
-          $actualLayout = @(Get-ChildItem -LiteralPath $skill -Force | ForEach-Object Name | Sort-Object)
-          $expectedLayout = @("SKILL.md", "agents", "references")
-          if (Compare-Object -ReferenceObject $expectedLayout -DifferenceObject $actualLayout) { throw "Runtime top-level layout is not exact" }
-          foreach ($devOnly in @("examples", "tests", "scripts", "templates", ".github")) {
-              if (Test-Path (Join-Path $skill $devOnly)) { throw "Runtime copy contains $devOnly" }
-          }
-          $agentSources = @(Get-ChildItem templates\codex-agents\*.toml -File)
-          if ($agentSources.Count -ne 8) { throw "Expected 8 template agents" }
-          $installedAgents = @(Get-ChildItem -LiteralPath $agents -Filter "*.toml" -File)
-          if ($installedAgents.Count -ne 8) { throw "Expected 8 installed agents" }
-          foreach ($source in $agentSources) {
-              if (-not (Test-Path (Join-Path $agents $source.Name))) { throw "Agent install missing: $($source.Name)" }
-          }
-          $repeatFailed = $false
-          try { & .\scripts\install-codex.ps1 } catch { $repeatFailed = $true }
-          if (-not $repeatFailed) { throw "repeat install unexpectedly succeeded" }
-          Add-Content -LiteralPath (Join-Path $skill "SKILL.md") -Value "clean-room mutation"
+          if (-not (Test-Path (Join-Path $skill ".agent-orchestrator-install.tsv"))) { throw "managed manifest missing" }
+          if (@(Get-ChildItem -LiteralPath $agents -Filter "*.toml" -File).Count -ne 7) { throw "expected 7 installed worker agents" }
+          $managedCheckOutput = (& .\scripts\install-codex.ps1 -Check | Out-String)
+          if ($managedCheckOutput -notmatch "CHECK PASS" -or $managedCheckOutput -notmatch "verified managed" -or $managedCheckOutput -notmatch "requires -Force") { throw "-Check managed collision preview did not report the force requirement" }
+
+          # A tampered install manifest must never escape the managed directories.
+          $stateManifest = Join-Path $skill ".agent-orchestrator-install.tsv"
+          $manifestOriginal = [IO.File]::ReadAllText($stateManifest)
+          $victim = Join-Path $env:AGENT_ORCHESTRATOR_HOME "victim.txt"
+          [IO.File]::WriteAllText($victim, "do not move`n", [Text.UTF8Encoding]::new($false))
+          $victimHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $victim).Hash.ToLowerInvariant()
+          $manifestTampered = $manifestOriginal -replace '(?m)^agent\tfrontend-worker\.toml\t[0-9a-f]{64}$', "agent`t../../../victim.txt`t$victimHash"
+          [IO.File]::WriteAllText($stateManifest, $manifestTampered, [Text.UTF8Encoding]::new($false))
+          $traversalBlocked = $false
+          try { & .\scripts\install-codex.ps1 -Uninstall -Force } catch { $traversalBlocked = $true }
+          if (-not $traversalBlocked) { throw "tampered manifest path traversal was accepted" }
+          if (-not (Test-Path -LiteralPath $victim)) { throw "tampered manifest moved an external file" }
+          if (-not (Test-Path -LiteralPath $skill)) { throw "tampered manifest removed the Skill" }
+          [IO.File]::WriteAllText($stateManifest, $manifestOriginal, [Text.UTF8Encoding]::new($false))
+
+          Add-Content -LiteralPath (Join-Path $skill "SKILL.md") -Value "user mutation"
           & .\scripts\install-codex.ps1 -Force
-          $sourceHash = (Get-FileHash -LiteralPath "SKILL.md").Hash
-          $installedHash = (Get-FileHash -LiteralPath (Join-Path $skill "SKILL.md")).Hash
-          if ($sourceHash -ne $installedHash) { throw "-Force did not restore canonical runtime content" }
-          foreach ($source in $agentSources) {
-              if (-not (Test-Path (Join-Path $agents $source.Name))) { throw "Forced agent install missing: $($source.Name)" }
-          }
+          if ((Get-FileHash -LiteralPath "SKILL.md").Hash -ne (Get-FileHash -LiteralPath (Join-Path $skill "SKILL.md")).Hash) { throw "-Force did not restore canonical Skill" }
+
+          $userNote = Join-Path $skill "user-note.txt"
+          Set-Content -LiteralPath $userNote -Value "user-owned extra content" -NoNewline
+          $extraSkillCheck = (& .\scripts\install-codex.ps1 -Uninstall -Check | Out-String)
+          if ($extraSkillCheck -notmatch "CHECK PASS" -or $extraSkillCheck -notmatch "user-note.txt" -or $extraSkillCheck -notmatch "requires -Force") { throw "untracked Skill content was not protected by uninstall preflight" }
+          if (-not (Test-Path -LiteralPath $userNote)) { throw "-Uninstall -Check removed untracked Skill content" }
+          Remove-Item -LiteralPath $userNote -Force
+
+          $agent = Join-Path $agents "frontend-worker.toml"
+          Add-Content -LiteralPath $agent -Value "# local customization"
+          $sourceProfile = "templates\codex-agents\frontend-worker.toml"
+          $parkedSourceProfile = "$sourceProfile.parked"
+          Move-Item -LiteralPath $sourceProfile -Destination $parkedSourceProfile
+          $uninstallCheckOutput = (& .\scripts\install-codex.ps1 -Uninstall -Check | Out-String)
+          if ($uninstallCheckOutput -notmatch "CHECK PASS" -or $uninstallCheckOutput -notmatch "requires -Force") { throw "-Uninstall -Check did not report force requirement neutrally" }
+          if (-not (Test-Path -LiteralPath $agent)) { throw "-Uninstall -Check mutated a managed agent" }
+          $uninstallFailed = $false
+          try { & .\scripts\install-codex.ps1 -Uninstall } catch { $uninstallFailed = $true }
+          if (-not $uninstallFailed) { throw "modified managed file did not block uninstall" }
+          & .\scripts\install-codex.ps1 -Uninstall -Force
+          Move-Item -LiteralPath $parkedSourceProfile -Destination $sourceProfile
+          if (Test-Path $skill) { throw "Skill still active after uninstall" }
+          if (Test-Path $agent) { throw "managed Agent still active after uninstall" }
+
+  release_safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install verifier dependencies
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements-dev.txt
+      - name: Run release regression tests
+        run: python -m unittest tests.test_release -v
+      - name: Verify local release gate
+        run: python scripts/verify.py --release
+      - name: Build release archive
+        run: python scripts/verify.py --build-release-archive "$RUNNER_TEMP/release-a.zip"
+      - name: Build second deterministic archive
+        run: python scripts/verify.py --build-release-archive "$RUNNER_TEMP/release-b.zip"
+      - name: Verify deterministic bytes
+        run: cmp "$RUNNER_TEMP/release-a.zip" "$RUNNER_TEMP/release-b.zip"
+      - name: Verify release archive
+        run: python scripts/verify.py --release-archive "$RUNNER_TEMP/release-a.zip"

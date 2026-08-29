@@ -1,115 +1,99 @@
 # Agent Orchestrator
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-0f766e.svg)](LICENSE) [![GitHub Actions: validate](https://github.com/Xhwe-x/agent-orchestrator/actions/workflows/validate.yml/badge.svg)](https://github.com/Xhwe-x/agent-orchestrator/actions/workflows/validate.yml)
-
-> A repository-aware multi-agent orchestration skill for Codex.
->
-> Plan in one primary thread, delegate bounded work, and accept results only after review and verification.
+A repository-aware, token-aware multi-agent orchestration Skill for OpenAI Codex.
 
 [简体中文](README.zh-CN.md)
 
-## What this is
+> Roles follow the real repository and task. The Skill does not invent architecture merely to justify an Agent role.
 
-`agent-orchestrator` is a compact Skill and configuration template for coordinating software work across a real repository. It asks the primary orchestrator to inspect the repository and applicable `AGENTS.md` files, classify the work, assign only independently verifiable workstreams, review every result, and perform the final integration and verification.
+## v1.0.0
 
-Its central rule is simple: roles follow the repository and the task. The repository is never reshaped to justify an agent role. This package provides orchestration rules, agent contracts, Codex templates, examples, installers, and verification guidance; it is not an application framework or a package manager.
+v1.0.0 has **1 non-dispatchable Primary Sol Orchestrator** (`orchestrator`) and **exactly 7 dispatchable workers**:
 
-## Use it when
+- `frontend_worker`
+- `backend_worker`
+- `generic_worker`
+- `test_worker`
+- `review_worker`
+- `explorer_worker`
+- `docs_worker`
 
-- a feature crosses multiple existing ownership areas;
-- a large repository needs structured exploration and decomposition;
-- independent implementation, test, documentation, or review work can be isolated;
-- shared contracts or write-scope conflicts need explicit coordination.
+The primary owns requirements, decomposition, routing, integration, changed-path auditing, final verification, and acceptance. Workers do not spawn subagents or delegate further. v1 does **not** install an `orchestrator.toml` custom Worker profile; the seven worker profiles are the only custom Agents installed.
 
-Keep a small local change in the primary thread. Do not invent a frontend, backend, service, test layer, or documentation system because a worker name exists.
+## Token-aware behavior
 
-## Workflow
+- Tiny tasks stay primary-only; there is no automatic fanout.
+- Before meaningful delegation, the primary builds a compact Repository Digest covering ownership, entry points, shared contracts, verification commands, and constraints.
+- Specialist routing follows real repository boundaries; `backend_worker` is used only when a real server/API/persistence/backend-service boundary exists.
+- Initial assignments use the manifest defaults; `max` is never a default.
+- The primary escalates one effort level at a time only when failures or other evidence justify it (`medium → high → xhigh → max`).
+- `review_worker` is reserved for risk-based review with a recorded rationale, not every edit.
 
-The compact, repository-first flow is:
+## Models and default effort
 
-```text
-inspect repository + AGENTS.md
-        → classify boundaries and dependencies
-        → stabilize shared contracts
-        → dispatch bounded workers
-        → review evidence
-        → integrate and run final verification
-```
+This table mirrors the eight `[[roles]]` entries in [`manifest.toml`](manifest.toml).
 
-Read-heavy work and disjoint writes may run in parallel. Shared interfaces, migrations, lockfiles, generated artifacts, and overlapping writes stay serialized or orchestrator-owned. Nested delegation is prohibited by default. Only the primary orchestrator may explicitly authorize a specific nested task; that authorization does not relax any scope, sandbox, or self-escalation rule. A worker's completion is evidence—not final acceptance.
-
-The first repository investigation creates a compact Repository Digest of ownership, entry points, shared contracts, verification commands, and important constraints; workers receive it with their scoped contracts instead of rescanning the whole repository. The primary thread handles trivial reviews, while `review_worker` is reserved for elevated-risk changes with a recorded rationale and effort choice.
-
-## Roles and model split
-
-The reusable profiles contain one primary orchestrator and seven bounded worker roles:
-
-| Profile | Responsibility | Access | Model / effort |
+| Role | Dispatchable | Model | Default effort |
 |---|---|---|---|
-| `orchestrator` | Requirements, decomposition, dispatch, review, integration, final verification | `workspace-write` | `gpt-5.6-sol` / `medium` default |
-| `frontend_worker` | Existing client UI, components, styles, and client-side state | scoped write | `gpt-5.6-terra` / `medium` default |
-| `backend_worker` | Existing server, API, persistence, or backend-service code | scoped write | `gpt-5.6-terra` / `medium` default |
-| `generic_worker` | Existing non-frontend, non-backend implementation domains | scoped write | `gpt-5.6-terra` / `medium` default |
-| `test_worker` | Assigned tests, fixtures, harnesses, and non-destructive verification | scoped write | `gpt-5.6-luna` / `high` default |
-| `explorer_worker` | Ownership, dependency, execution-path, shared-file, and verification-command research | read-only | `gpt-5.6-luna` / `medium` default |
-| `docs_worker` | Framework, API, dependency, protocol, and project-documentation research | read-only | `gpt-5.6-luna` / `medium` default |
-| `review_worker` | Correctness, regression, interface, security-relevant, and test-gap audit | read-only | `gpt-5.6-luna` / `high` default |
+| `orchestrator` | no | `gpt-5.6-sol` | `medium` |
+| `frontend_worker` | yes | `gpt-5.6-terra` | `medium` |
+| `backend_worker` | yes | `gpt-5.6-terra` | `medium` |
+| `generic_worker` | yes | `gpt-5.6-terra` | `medium` |
+| `test_worker` | yes | `gpt-5.6-luna` | `high` |
+| `review_worker` | yes | `gpt-5.6-luna` | `high` |
+| `explorer_worker` | yes | `gpt-5.6-luna` | `medium` |
+| `docs_worker` | yes | `gpt-5.6-luna` | `medium` |
 
-The orchestrator controls one effort ladder, `medium → high → xhigh → max`, and moves up only when evidence justifies it. Workers never self-escalate; they return an escalation signal for the orchestrator to assess. `max` is an exceptional final escalation, never a normal default. Implementation workers use Terra; test, review, exploration, and documentation workers use Luna.
-
-`backend_worker` is valid only when the repository already contains a real server/API/persistence/backend-service boundary. A game or tool without one should use `generic_worker` or a project-defined domain worker instead.
+Only the primary orchestrator controls the stepwise effort ladder. Workers do not self-escalate.
 
 ## Install
 
-Run the installer from the repository root.
+Run from the repository root. The shell installer supports `--check`, `--force`, and `--uninstall`.
 
-### Windows
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install-codex.ps1
-```
-
-Use `-Force` only when intentionally replacing an existing Skill installation.
-
-### macOS / Linux
+macOS / Linux:
 
 ```bash
+./scripts/install-codex.sh --check
 ./scripts/install-codex.sh
 ```
 
-Use `--force` only when intentional replacement is required.
+For a managed upgrade, run the read-only preflight with force and then the real install:
 
-The installers keep the runtime package lean:
+```bash
+./scripts/install-codex.sh --check --force
+./scripts/install-codex.sh --force
+```
 
-- `SKILL.md`, `agents/`, and `references/` are copied to `$HOME/.agents/skills/agent-orchestrator/`;
-- the eight Agent TOMLs are copied separately to `$HOME/.codex/agents/`.
+Windows requires PowerShell 7+ (`pwsh`) and supports `-Check`, `-Force`, and `-Uninstall`:
 
-For isolated installer checks, both scripts also honor the `AGENT_ORCHESTRATOR_HOME` environment variable.
+```powershell
+pwsh -File .\scripts\install-codex.ps1 -Check
+pwsh -File .\scripts\install-codex.ps1
+```
+
+For a managed upgrade:
+
+```powershell
+pwsh -File .\scripts\install-codex.ps1 -Check -Force
+pwsh -File .\scripts\install-codex.ps1 -Force
+```
+
+`--check`/`-Check` is read-only and never mutates the filesystem. `--force`/`-Force` is not ownership: only verified managed collisions may be replaced; unmanaged or unverified collisions remain protected even with force. A legacy `orchestrator.toml` is migrated only after its SHA-256 matches a recognized compatibility fingerprint in `manifest.toml`; a recognized file is backed up and deactivated, while an unknown or user-owned file blocks installation.
+
+Both installers honor `AGENT_ORCHESTRATOR_HOME` for isolated testing. They install the runtime Skill under `$HOME/.agents/skills/agent-orchestrator/` and the seven worker Agent TOMLs under `$HOME/.codex/agents/`. These are user-global Codex paths, so the Skill and workers are globally available to that user after installation. The installer does not edit or overwrite the user's Codex `config.toml`; primary-session model/effort settings remain runtime configuration.
 
 ## Use
 
-After installation, invoke the Skill in Codex with the `$agent-orchestrator` entry point and a task that needs coordination:
+`agents/openai.yaml` sets `allow_implicit_invocation=false`, so v1 disables implicit invocation. After installation, invoke the globally available Skill explicitly:
 
 ```text
 $agent-orchestrator
-Inspect the repository, classify the work, delegate only safe independent workstreams, review results, then integrate and verify.
+Inspect the repository, protect existing changes, classify the work, delegate only safe independent workstreams, audit changed paths, then integrate and verify.
 ```
 
-The same default prompt is declared in [agents/openai.yaml](agents/openai.yaml). Project-specific ownership, verification commands, and domain constraints belong in a project-level `AGENTS.md`.
+## Configuration
 
-## Configuration layout
-
-The repository includes templates rather than a one-size-fits-all project configuration:
-
-```text
-templates/
-├── AGENTS.global.md       # concise global orchestration policy
-├── AGENTS.project.md      # project boundaries and verification guidance
-├── codex-config.toml      # main model and agent-session settings
-└── codex-agents/          # orchestrator and worker TOMLs
-```
-
-The configuration template currently demonstrates:
+[`templates/codex-config.toml`](templates/codex-config.toml) demonstrates:
 
 ```toml
 model = "gpt-5.6-sol"
@@ -117,49 +101,48 @@ model_reasoning_effort = "medium"
 
 [agents]
 enabled = true
-max_concurrent_threads_per_session = 6
+max_depth = 1
 ```
 
-The concurrency value is a ceiling, not a target. Adapt the template to the project/session configuration in use. See [references/codex.md](references/codex.md) for the distinction between user-level Skill files, personal Agent profiles, and project-scoped agents.
+`max_depth = 1` is defense in depth for Codex Multi-Agent V1; current Multi-Agent V2 ignores that depth field, so the Skill/worker one-level policy and post-worker audits remain authoritative. The template deliberately omits the global thread-limit setting because current Multi-Agent V2 can reject the legacy/global limit when V2 is active. Let the active backend use its own default unless you intentionally tune its documented backend-specific limit.
 
-## Examples
-
-- [Full-stack web feature](examples/web-project.md): stabilize the shared upload contract, then give disjoint web, API, and test paths to the matching workers; the orchestrator integrates the result.
-- [Game project without a server backend](examples/game-project.md): use `generic_worker` for game/content paths and `frontend_worker` for UI; do not create a backend to fit the role name.
+The primary Sol/`medium` values are recommended canonical defaults, not something the installer can force into an already-running session. When runtime-visible session metadata is available, confirm the actual primary model/effort before claiming those defaults are active.
 
 ## Verify
 
-Install the local development-verification dependencies first:
+Development verification requires Python **3.11+** and the pinned dependency in `requirements-dev.txt`:
 
 ```bash
 python -m pip install -r requirements-dev.txt
+python -m unittest discover -s tests -p 'test_*.py' -v
+python scripts/verify.py
+bash -n scripts/install-codex.sh
+git diff --check
 ```
 
-Then run the repository's package verifier:
+Release packaging is driven only by the explicit `[release].include` allowlist in `manifest.toml`:
 
 ```bash
-python scripts/verify.py
+python scripts/verify.py --release
+python scripts/verify.py --build-release-archive /tmp/agent-orchestrator-v1.0.0.zip
+python scripts/verify.py --release-archive /tmp/agent-orchestrator-v1.0.0.zip
 ```
 
-It checks required structure, Skill metadata and size, TOML syntax, model/effort mapping, backend semantics, the default nested-delegation policy, local links, text hygiene, portability, OpenAI metadata, and installer invariants. The [GitHub Actions workflow](.github/workflows/validate.yml) also checks shell syntax and clean-room installation on Linux, and parses and tests the PowerShell installer on Windows with Python 3.13.
-
-For manual live Codex behavior cases, see [tests/evals.md](tests/evals.md). The documented acceptance record is in [ACCEPTANCE.md on GitHub](https://github.com/Xhwe-x/agent-orchestrator/blob/main/ACCEPTANCE.md).
 
 ## Repository map
 
 ```text
-agent-orchestrator/
-├── SKILL.md
-├── agents/openai.yaml
-├── references/                 # orchestration, contracts, models, Codex notes
-├── templates/                  # AGENTS, Codex, and Agent profile templates
-├── examples/                   # web and no-backend game scenarios
-├── scripts/                    # Windows/Linux installers and verifier
-├── tests/evals.md              # live behavior evaluation cases
-└── .github/workflows/validate.yml
+SKILL.md                         runtime orchestration entry
+manifest.toml                    version / roles / policy / release allowlist
+agents/openai.yaml               Skill UI/invocation metadata
+references/                      orchestration, contracts, model and Codex notes
+templates/codex-agents/          seven dispatchable worker Agent profiles
+scripts/                         installers and verifier
+tests/                           automated regression tests + optional orchestration scenarios
+.github/workflows/validate.yml   Linux/macOS/Windows CI
 ```
 
-Further reading: [SKILL.md](SKILL.md), [orchestration rules](references/orchestration.md), [Agent contracts](references/agent-contract.md), and [model policy](references/models.md).
+See [`references/orchestration.md`](references/orchestration.md), [`references/agent-contract.md`](references/agent-contract.md), and [`SECURITY.md`](SECURITY.md).
 
 ## License
 

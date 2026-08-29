@@ -7,5 +7,9 @@ model_reasoning_effort = "medium"
 
 [agents]
 enabled = true
-# This is a ceiling, not a target. Spawn only meaningful workstreams.
-max_concurrent_threads_per_session = 6
+# V1 defense in depth for exactly one delegation level. Current Multi-Agent V2 ignores this field,
+# so Skill/worker policy remains the authoritative one-level rule.
+max_depth = 1
+# Deliberately omit max_concurrent_threads_per_session/max_threads here: current Multi-Agent V2
+# can reject the legacy/global thread-limit setting. Let the active backend use its own default unless
+# the user intentionally configures that backend-specific limit and verifies it in their runtime.
