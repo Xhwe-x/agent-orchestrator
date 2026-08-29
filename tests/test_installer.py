@@ -140,6 +140,152 @@ exec "$AO_REAL_LN" "$@"
             self.assertEqual(collision.read_text(encoding="utf-8"), "late user-owned collision\n")
             self.assertFalse((home / ".agents/skills/agent-orchestrator").exists(), result.stdout)
 
+    def test_late_skill_internal_collision_preserves_user_content_and_recovery_state(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent orchestrator late skill collision ") as temp:
+            base = Path(temp)
+            home = base / "home"
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            collision = home / ".agents/skills/agent-orchestrator/SKILL.md"
+            user_file = home / ".agents/skills/agent-orchestrator/user-owned.txt"
+            marker_file = base / "late-skill-marker"
+            real_ln = shutil.which("ln")
+            self.assertIsNotNone(real_ln)
+            wrapper = fake_bin / "ln"
+            wrapper.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ \"${1:-}\" != -* && \"${2:-}\" == */.agents/skills/agent-orchestrator/SKILL.md && ! -e \"$AO_LATE_SKILL_MARKER\" ]]; then\n"
+                "  mkdir -p \"$(dirname \"$2\")\"\n"
+                "  printf 'late user-owned skill content\\n' > \"$(dirname \"$2\")/user-owned.txt\"\n"
+                "  printf 'late user-owned SKILL collision\\n' > \"$2\"\n"
+                "  : > \"$AO_LATE_SKILL_MARKER\"\n"
+                "fi\n"
+                "exec \"$AO_REAL_LN\" \"$@\"\n",
+                encoding="utf-8",
+            )
+            wrapper.chmod(0o755)
+
+            result = self.run_installer(
+                home,
+                extra_env={
+                    "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+                    "AO_LATE_SKILL_MARKER": str(marker_file),
+                    "AO_REAL_LN": str(real_ln),
+                },
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertTrue(marker_file.is_file(), result.stdout)
+            self.assertTrue(user_file.is_file(), result.stdout)
+            self.assertTrue(collision.is_file(), result.stdout)
+            self.assertEqual(user_file.read_text(encoding="utf-8"), "late user-owned skill content\n", result.stdout)
+            self.assertEqual(collision.read_text(encoding="utf-8"), "late user-owned SKILL collision\n", result.stdout)
+            self.assertRegex(result.stdout, r"(?is)rollback.{0,40}incomplete")
+            recovery = re.search(r"(?im)preserved at (.+?); manual recovery", result.stdout)
+            self.assertIsNotNone(recovery, result.stdout)
+            self.assertTrue(Path(recovery.group(1).strip()).exists(), result.stdout)
+
+    def test_agent_cleanup_failure_removes_successfully_linked_agent_during_rollback(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent orchestrator agent cleanup failure ") as temp:
+            base = Path(temp)
+            home = base / "home"
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            failed_marker = base / "cleanup-failed"
+            real_rm = shutil.which("rm")
+            self.assertIsNotNone(real_rm)
+            wrapper = fake_bin / "rm"
+            wrapper.write_text(
+                "#!/usr/bin/env bash\n"
+                "for arg in \"$@\"; do\n"
+                "  if [[ \"$arg\" == */.codex/agents/.agent-orchestrator-agent.* && ! -e \"$AO_CLEANUP_FAILED_MARKER\" ]]; then\n"
+                "    : > \"$AO_CLEANUP_FAILED_MARKER\"\n"
+                "    exit 77\n"
+                "  fi\n"
+                "done\n"
+                "exec \"$AO_REAL_RM\" \"$@\"\n",
+                encoding="utf-8",
+            )
+            wrapper.chmod(0o755)
+
+            result = self.run_installer(
+                home,
+                extra_env={
+                    "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+                    "AO_CLEANUP_FAILED_MARKER": str(failed_marker),
+                    "AO_REAL_RM": str(real_rm),
+                },
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertTrue(failed_marker.is_file(), result.stdout)
+            self.assertFalse((home / ".codex/agents/backend-worker.toml").exists(), result.stdout)
+            self.assertFalse((home / ".agents/skills/agent-orchestrator").exists(), result.stdout)
+
+    def test_no_backup_incomplete_rollback_retains_the_reported_staging_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent orchestrator staging recovery ") as temp:
+            base = Path(temp)
+            home = base / "home"
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            collision_marker = base / "agent-collision"
+            cleanup_marker = base / "skill-cleanup-failed"
+            real_ln = shutil.which("ln")
+            real_rm = shutil.which("rm")
+            self.assertIsNotNone(real_ln)
+            self.assertIsNotNone(real_rm)
+            ln_wrapper = fake_bin / "ln"
+            ln_wrapper.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ \"${1:-}\" != -* && \"${2:-}\" == */.codex/agents/backend-worker.toml && ! -e \"$AO_AGENT_COLLISION_MARKER\" ]]; then\n"
+                "  mkdir -p \"$(dirname \"$2\")\"\n"
+                "  printf 'late user-owned agent content\\n' > \"$2\"\n"
+                "  : > \"$AO_AGENT_COLLISION_MARKER\"\n"
+                "fi\n"
+                "exec \"$AO_REAL_LN\" \"$@\"\n",
+                encoding="utf-8",
+            )
+            ln_wrapper.chmod(0o755)
+            rm_wrapper = fake_bin / "rm"
+            rm_wrapper.write_text(
+                "#!/usr/bin/env bash\n"
+                "for arg in \"$@\"; do\n"
+                "  if [[ \"$arg\" == \"$AO_SKILL_DEST\" && ! -e \"$AO_SKILL_CLEANUP_MARKER\" ]]; then\n"
+                "    : > \"$AO_SKILL_CLEANUP_MARKER\"\n"
+                "    exit 77\n"
+                "  fi\n"
+                "done\n"
+                "exec \"$AO_REAL_RM\" \"$@\"\n",
+                encoding="utf-8",
+            )
+            rm_wrapper.chmod(0o755)
+
+            result = self.run_installer(
+                home,
+                extra_env={
+                    "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+                    "AO_AGENT_COLLISION_MARKER": str(collision_marker),
+                    "AO_REAL_LN": str(real_ln),
+                    "AO_SKILL_CLEANUP_MARKER": str(cleanup_marker),
+                    "AO_SKILL_DEST": str(home / ".agents/skills/agent-orchestrator"),
+                    "AO_REAL_RM": str(real_rm),
+                },
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertTrue(collision_marker.is_file(), result.stdout)
+            self.assertTrue(cleanup_marker.is_file(), result.stdout)
+            self.assertTrue((home / ".codex/agents/backend-worker.toml").is_file(), result.stdout)
+            self.assertEqual(
+                (home / ".codex/agents/backend-worker.toml").read_text(encoding="utf-8"),
+                "late user-owned agent content\n",
+                result.stdout,
+            )
+            self.assertRegex(result.stdout, r"(?is)rollback.{0,40}incomplete")
+            recovery = re.search(r"(?im)preserved at (.+?); manual recovery", result.stdout)
+            self.assertIsNotNone(recovery, result.stdout)
+            self.assertTrue(Path(recovery.group(1).strip()).exists(), result.stdout)
+
     def test_force_upgrade_backs_up_and_restores_canonical_content(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agent orchestrator 升级 ") as temp:
             home = Path(temp)
@@ -291,6 +437,35 @@ exec "$AO_REAL_LN" "$@"
             self.assertFalse((home / ".agents/skills/agent-orchestrator").exists())
             self.assertFalse(agent.exists())
 
+    def test_force_uninstall_rejects_symlinked_agents_ancestor_without_touching_external_skill(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent orchestrator external skill uninstall ") as temp:
+            base = Path(temp)
+            home = base / "home"
+            self.assertEqual(self.run_installer(home).returncode, 0)
+
+            external = base / "external"
+            external.mkdir()
+            external_agents = external / ".agents"
+            shutil.move(str(home / ".agents"), str(external_agents))
+            external_marker = external / "keep.txt"
+            external_marker.write_text("external user-owned marker\n", encoding="utf-8")
+            external_skill = external_agents / "skills/agent-orchestrator"
+            marker_before = external_marker.read_bytes()
+            skill_before = sorted(path.relative_to(external).as_posix() for path in external.rglob("*"))
+            (home / ".agents").symlink_to(external_agents, target_is_directory=True)
+
+            result = self.run_installer(home, "--uninstall", "--force")
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(external_marker.read_bytes(), marker_before, result.stdout)
+            self.assertTrue(external_skill.is_dir(), result.stdout)
+            self.assertEqual(
+                skill_before,
+                sorted(path.relative_to(external).as_posix() for path in external.rglob("*")),
+                result.stdout,
+            )
+            self.assertTrue((home / ".agents").is_symlink(), result.stdout)
+
     def test_force_backup_failure_never_deletes_the_existing_installation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="agent orchestrator rollback ") as temp:
             home = Path(temp)
@@ -320,6 +495,59 @@ exec "$AO_REAL_LN" "$@"
             self.assertEqual(
                 {p.name: p.read_bytes() for p in (home / ".codex/agents").glob("*.toml")},
                 original_agents,
+            )
+
+    def test_rollback_reports_incomplete_when_agent_destination_becomes_unsafe(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent orchestrator incomplete rollback ") as temp:
+            base = Path(temp)
+            home = base / "home"
+            self.assertEqual(self.run_installer(home).returncode, 0)
+            skill = home / ".agents/skills/agent-orchestrator/SKILL.md"
+            skill.write_text(skill.read_text(encoding="utf-8") + "\nuser mutation\n", encoding="utf-8")
+
+            external = base / "external"
+            external.mkdir()
+            external_marker = external / "keep.txt"
+            external_marker.write_text("external user-owned marker\n", encoding="utf-8")
+            external_agents = external / "agents"
+            external_agents.mkdir()
+            agents_destination = home / ".codex/agents"
+            real_mv = shutil.which("mv")
+            self.assertIsNotNone(real_mv)
+            fake_bin = base / "fake-bin"
+            fake_bin.mkdir()
+            wrapper = fake_bin / "mv"
+            wrapper.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -e\n"
+                f'"{real_mv}" "$@"\n'
+                "status=$?\n"
+                "if [[ \"$status\" -eq 0 && \"${1:-}\" == */.codex/agents/test-worker.toml && \"${2:-}\" == */backups/install-*/agents/test-worker.toml ]]; then\n"
+                f'  rmdir "{agents_destination}"\n'
+                f'  ln -s "{external_agents}" "{agents_destination}"\n'
+                "fi\n"
+                "exit \"$status\"\n",
+                encoding="utf-8",
+            )
+            wrapper.chmod(0o755)
+
+            result = self.run_installer(
+                home,
+                "--force",
+                extra_env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertRegex(
+                result.stdout,
+                r"(?is)(rollback.{0,40}incomplete|incomplete.{0,40}rollback)",
+            )
+            self.assertEqual(external_marker.read_text(encoding="utf-8"), "external user-owned marker\n")
+            self.assertTrue(agents_destination.is_symlink(), result.stdout)
+            self.assertTrue((home / ".agents/skills/agent-orchestrator/SKILL.md").is_file(), result.stdout)
+            self.assertTrue(
+                any((home / ".agent-orchestrator/backups").glob("install-*/agents/test-worker.toml")),
+                result.stdout,
             )
 
     def test_installer_rejects_agent_source_set_with_rogue_replacement(self) -> None:
@@ -820,6 +1048,80 @@ class PowerShellInstallerTests(unittest.TestCase):
             self.assertIn("unmanaged", result.stdout.lower())
             self.assertEqual(collision.read_bytes(), canonical.read_bytes())
             self.assertFalse((home / ".agents").exists())
+
+    def test_late_skill_file_collision_is_never_overwritten_during_commit(self) -> None:
+        source = POWERSHELL_INSTALLER.read_text(encoding="utf-8")
+        match = re.search(
+            r"(?ms)^[ \t]*function Install-SkillNoClobber\s*\{.*?(?=\n\n    try \{)",
+            source,
+        )
+        self.assertIsNotNone(match, "Install-SkillNoClobber function was not found")
+        commit = match.group(0)
+
+        self.assertRegex(
+            commit,
+            r"\$Temp\s*=\s*Join-Path.*?\[guid\]::NewGuid\(\)\.ToString\(\"N\"\)",
+        )
+        self.assertRegex(
+            commit,
+            r"\[IO\.File\]::Open\(\s*\$Temp\s*,\s*\[IO\.FileMode\]::CreateNew\b",
+        )
+        self.assertRegex(
+            commit,
+            r"\[IO\.File\]::Move\(\s*\$Temp\s*,\s*\$Destination\s*,\s*\$false\s*\)",
+        )
+        self.assertNotRegex(
+            commit,
+            r"Copy-Item\s+-LiteralPath\s+\$Source\s+-Destination\s+\$Destination",
+        )
+
+    def test_late_skill_internal_collision_preserves_user_content_and_recovery_state(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent orchestrator PowerShell late skill collision ") as temp:
+            base = Path(temp)
+            source_root = base / "source"
+            shutil.copytree(ROOT, source_root, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            installer = source_root / "scripts/install-codex.ps1"
+            script = installer.read_text(encoding="utf-8")
+            needle = "                [IO.File]::Move($Temp, $Destination, $false)\n"
+            self.assertEqual(script.count(needle), 1, "Skill commit seam was not uniquely located")
+            injection = (
+                needle
+                + '                if ($Relative -eq "SKILL.md") {\n'
+                + '                    [IO.File]::WriteAllText((Join-Path $SkillDest "user-owned.txt"), "late user-owned skill content`n")\n'
+                + '                    $LateAgents = Join-Path $SkillDest "agents"\n'
+                + '                    [IO.Directory]::CreateDirectory($LateAgents) | Out-Null\n'
+                + '                    [IO.File]::WriteAllText((Join-Path $LateAgents "openai.yaml"), "late user-owned Skill collision`n")\n'
+                + "                }\n"
+            )
+            installer.write_text(script.replace(needle, injection, 1), encoding="utf-8")
+
+            home = base / "home"
+            env = os.environ.copy()
+            env["AGENT_ORCHESTRATOR_HOME"] = str(home)
+            result = subprocess.run(
+                [PWSH, "-File", str(installer)],
+                cwd=source_root,
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+
+            user_file = home / ".agents/skills/agent-orchestrator/user-owned.txt"
+            collision = home / ".agents/skills/agent-orchestrator/agents/openai.yaml"
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertTrue(user_file.is_file(), result.stdout)
+            self.assertTrue(collision.is_file(), result.stdout)
+            self.assertEqual(user_file.read_text(encoding="utf-8"), "late user-owned skill content\n", result.stdout)
+            self.assertEqual(collision.read_text(encoding="utf-8"), "late user-owned Skill collision\n", result.stdout)
+            self.assertRegex(result.stdout, r"(?is)rollback.{0,40}incomplete")
+            normalized_output = re.sub(r"[\s|]+", " ", result.stdout)
+            recovery = re.search(r"(?i)preserved at (.+?); manual recovery", normalized_output)
+            self.assertIsNotNone(recovery, result.stdout)
+            self.assertTrue(Path(recovery.group(1).strip()).exists(), result.stdout)
 
 
 if __name__ == "__main__":

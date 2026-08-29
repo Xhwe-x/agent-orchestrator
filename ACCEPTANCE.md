@@ -28,7 +28,7 @@ bash -n scripts/install-codex.sh
 git diff --check
 ```
 
-Observed result: **83 automated Python regression tests pass** and **32 platform-specific tests are skipped** in the current Windows environment (Unix Bash-installer and symlink-permission variants). The suite covers policy consistency, strict one-level topology, custom-profile activation rules, shared-checkout writer serialization, installer ownership/collision semantics, neutral check mode, rollback failure injection, operation locking, source reparse/symlink rejection, managed-manifest traversal, untracked Skill content, source-independent uninstall, historical-profile migration, late/TOCTOU collision no-clobber behavior, release allowlist enforcement, deterministic archive metadata, path ambiguity, non-regular members, traversal, altered bytes, and other negative archive cases.
+Observed result: **90 total tests: 53 pass and 37 platform-specific tests are skipped** in the current Windows environment (Unix Bash-installer and symlink-permission variants). The suite covers policy consistency, strict one-level topology, custom-profile activation rules, shared-checkout writer serialization, installer ownership/collision semantics, neutral check mode, rollback failure injection, operation locking, source reparse/symlink rejection, managed-manifest traversal, untracked Skill content, source-independent uninstall, historical-profile migration, late/TOCTOU collision no-clobber behavior, release allowlist enforcement, deterministic archive metadata, path ambiguity, non-regular members, traversal, altered bytes, and other negative archive cases.
 
 The repository verifier passes locally. Bash syntax could not be run because Bash/WSL is unavailable on this Windows host. PowerShell 7 is available in this acceptance environment, and all locally runnable PowerShell runtime tests pass. The workflow is configured to exercise the PowerShell 7+ installer and Linux/macOS Bash installer suite; no remote GitHub Actions result is claimed.
 
@@ -45,6 +45,10 @@ The repository verifier passes locally. Bash syntax could not be run because Bas
 - The PowerShell `-Check` regression is fixed: the collision-order policy test and the runtime canonical-collision test pass, with `CHECK PASS` reported before any refusal and no filesystem mutation.
 - PowerShell source validation walks every required source-path ancestor and rejects reparse-point/junction components before copying; the reparse-ancestor regression covers all three global destination roots and verifies no external mutation.
 - Bash destination validation rejects symlinked ancestors. Its operation-lock status handling treats missing/malformed PID metadata and any indeterminate `kill -0` result as busy, preserves the existing lock, and permits stale-lock recovery only after a conclusive dead-PID result; the corresponding Unix tests are included but platform-skipped here.
+- Bash manifest staging now creates the temporary manifest outside `STAGE/skill`, so the manifest’s file enumeration cannot accidentally hash its own temporary file; the staged manifest contains only the canonical version, Skill, and Worker records.
+- Windows CI captures PowerShell `Write-Host` diagnostics by merging the Information stream (`6>&1`) before `Out-String` for installer preflight assertions; this fixes output-capture false failures without claiming a remote workflow pass.
+- PowerShell Skill-file commits use a sibling temporary stream opened exclusively with `FileMode.CreateNew`/`FileShare.None`, flush the complete payload, and move it with `File.Move(..., $false)`; an existing Skill file is never overwritten. The late Skill-file collision regression test covers this commit boundary.
+- Bash rollback records each Skill file successfully linked (with its expected source hash) and each Agent successfully linked by the current attempt; it removes only those tracked files, removes created Skill directories in reverse order with `rmdir`, and never recursively removes user data or late collisions. If rollback cannot complete, non-empty backup state or the staging tree is preserved as the recovery artifact, `rollback incomplete` is reported with a recovery path and manual-recovery requirement, and the failure remains nonzero; precise-content rollback regressions are included but platform-skipped here.
 - A no-`-Force` global installation completed in the user-global Codex paths with exactly seven managed Worker Agent files. Its runtime manifest is exact: 14 records (one version, six Skill files, and seven Worker files), and all 13 managed payload hashes match this source tree.
 - A recognized legacy `orchestrator.toml` was backed up and deactivated under the managed install backup area; the backup fingerprint matches a compatibility hash listed in `manifest.toml`.
 - `README.md` and `README.zh-CN.md` are synchronized on the v1.0.0 role count, installer flags, PowerShell 7 requirement, global paths, and release/CI caveats; `test_windows_installer_requires_and_documents_powershell_7` passes its cross-document checks.
@@ -54,7 +58,7 @@ The repository verifier passes locally. Bash syntax could not be run because Bas
 The custom release archive is built only from exact `[release].include` file paths in `manifest.toml`; glob-driven or repository-walk inclusion is rejected.
 
 Package file count: 40
-Release content SHA-256: 388a16bc53a953e096ecadec1acb4083afda9a41984d5b09ef860c1620ce7a5c
+Release content SHA-256: 94ea56b5bd693f7549667029e2812b0a49898d1b3be356741b7a02df69c44954
 
 `ACCEPTANCE.md` remains part of the package count but its own bytes are excluded from the canonical content digest to avoid self-reference.
 
@@ -64,8 +68,8 @@ The release builder uses `ZIP_STORED` with fixed metadata and the archive verifi
 
 - This acceptance run used Windows with PowerShell 7 (`pwsh`) available; the PowerShell installer checks ran locally. Unix Bash-installer and symlink-permission variants were skipped as noted above.
 - macOS is not available in the local environment; the Bash regression suite is configured for the workflow but is not claimed as remotely executed here.
-- Remote GitHub Actions results, remote push status, and live Codex behavior are not inferred from local execution.
+- The latest remote GitHub Actions run still fails on the pre-fix revision; a new push and rerun are pending. Remote push status and live Codex behavior are not inferred from local execution.
 
 ## Release status
 
-**LOCAL v1.0.0 RELEASE PACKAGE VERIFIED: source tests, verifier, deterministic packaging, byte-for-byte archive comparison, canonical archive verification, and extracted self-checks passed in the local environment. Remote GitHub Actions and push status remain unclaimed.**
+**LOCAL v1.0.0 RELEASE PACKAGE VERIFIED: source tests, verifier, deterministic packaging, byte-for-byte archive comparison, canonical archive verification, and extracted self-checks passed in the local environment. The latest remote GitHub Actions run still fails on the pre-fix revision; a new push and rerun are pending.**

@@ -588,6 +588,7 @@ $StageSkill = Join-Path $Stage "skill"
 $StageAgents = Join-Path $Stage "agents"
 [void](Ensure-SafeInstallerDirectory $StageSkill "staged Skill")
 [void](Ensure-SafeInstallerDirectory $StageAgents "staged Agents")
+$PreserveStage = $false
 
 try {
     foreach ($Relative in $SkillRuntimeFiles) {
@@ -637,8 +638,10 @@ try {
         [void](Assert-SafeInstallerDestinationPath (Join-Path $BackupRoot "skill") "install backup skill")
     }
 
-    $MovedNewAgents = New-Object System.Collections.Generic.List[string]
+    $MovedNewAgents = New-Object System.Collections.Generic.List[object]
     $BackedUpAgents = New-Object System.Collections.Generic.List[string]
+    $CreatedSkillFiles = New-Object System.Collections.Generic.List[object]
+    $CreatedSkillDirectories = New-Object System.Collections.Generic.List[string]
     $SkillBackedUp = $false
     $NewSkillInstalled = $false
     $LegacyOrchestratorBackedUp = $false
@@ -661,6 +664,19 @@ try {
         }
     }
 
+    function Ensure-TrackedSkillDirectory([string]$Path, [string]$Label) {
+        $Canonical = Get-CanonicalInstallerPath $Path $Label
+        $Existed = Test-PathEntryExists $Canonical
+        [void](Ensure-SafeInstallerDirectory $Path $Label)
+        if (-not $Existed) {
+            $Created = Get-PathEntry $Canonical
+            if ($null -eq $Created -or -not $Created.PSIsContainer -or (($Created.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw "Unsafe Skill directory was created during installation: $Path"
+            }
+            $script:CreatedSkillDirectories.Add($Canonical)
+        }
+    }
+
     function Install-SkillNoClobber {
         try {
             [void](Ensure-SafeInstallerDirectory $SkillDest "Skill destination" -RequireMissing)
@@ -668,12 +684,127 @@ try {
             throw "Late or unverified Skill collision detected during commit; refusing to overwrite: $SkillDest. $($_.Exception.Message)"
         }
         $script:NewSkillInstalled = $true
+        $script:CreatedSkillDirectories.Add((Get-CanonicalInstallerPath $SkillDest "Skill destination"))
         foreach ($Relative in @($SkillRuntimeFiles + $InstallManifestName)) {
             $Source = Join-Path $StageSkill $Relative
             $Destination = Join-Path $SkillDest $Relative
-            [void](Ensure-SafeInstallerDirectory (Split-Path $Destination -Parent) "Skill destination parent")
+            [void](Ensure-TrackedSkillDirectory (Split-Path $Destination -Parent) "Skill destination parent")
+            $Temp = Join-Path (Split-Path $Destination -Parent) (".agent-orchestrator-skill-" + [guid]::NewGuid().ToString("N") + ".tmp")
+            [void](Assert-SafeInstallerDestinationPath $Temp "temporary Skill destination")
             [void](Assert-SafeInstallerDestinationPath $Destination "Skill destination file")
-            Copy-Item -LiteralPath $Source -Destination $Destination
+            $SourceStream = $null
+            $TempStream = $null
+            try {
+                $SourceStream = [IO.File]::Open($Source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+                $TempStream = [IO.File]::Open($Temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                $SourceStream.CopyTo($TempStream)
+                $TempStream.Flush($true)
+                $TempStream.Dispose()
+                $TempStream = $null
+                $SourceStream.Dispose()
+                $SourceStream = $null
+                [IO.File]::Move($Temp, $Destination, $false)
+                $script:CreatedSkillFiles.Add([pscustomobject]@{ Path = $Destination; Hash = (Get-Sha256 $Source) })
+            } catch {
+                throw "Late or unverified Skill collision detected during commit; refusing to overwrite: $Destination. $($_.Exception.Message)"
+            } finally {
+                if ($null -ne $TempStream) {
+                    $TempStream.Dispose()
+                }
+                if ($null -ne $SourceStream) {
+                    $SourceStream.Dispose()
+                }
+                if (Test-Path -LiteralPath $Temp) {
+                    [void](Assert-SafeInstallerDestinationPath $Temp "temporary Skill destination")
+                    Remove-Item -Force -LiteralPath $Temp
+                }
+            }
+        }
+    }
+
+    function Try-RemoveTrackedFile([string]$Path, [string]$Label, [string]$ExpectedHash, [System.Collections.Generic.List[string]]$Issues) {
+        try {
+            [void](Assert-SafeInstallerDestinationPath $Path $Label)
+            $Item = Get-PathEntry $Path
+            if ($null -eq $Item) { return $true }
+            if ($Item.PSIsContainer -or (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw "preserved because it is no longer a regular file"
+            }
+            if (-not [string]::IsNullOrWhiteSpace($ExpectedHash) -and (Get-Sha256 $Path) -ne $ExpectedHash.ToLowerInvariant()) {
+                throw "preserved because its contents changed after this install created it"
+            }
+            Remove-Item -Force -LiteralPath $Path -ErrorAction Stop
+            if (Test-PathEntryExists $Path) {
+                throw "could not confirm removal"
+            }
+            return $true
+        } catch {
+            [void]$Issues.Add("${Label} ${Path}: $($_.Exception.Message)")
+            return $false
+        }
+    }
+
+    function Remove-TrackedSkillDirectories([System.Collections.Generic.List[string]]$Directories, [System.Collections.Generic.List[string]]$Issues) {
+        $Complete = $true
+        foreach ($Path in @($Directories | Sort-Object -Property Length -Descending)) {
+            try {
+                [void](Assert-SafeInstallerDestinationPath $Path "created Skill directory")
+                $Item = Get-PathEntry $Path
+                if ($null -eq $Item) { continue }
+                if (-not $Item.PSIsContainer -or (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                    throw "preserved because it is no longer a regular directory"
+                }
+                $Children = @(Get-ChildItem -Force -LiteralPath $Path -ErrorAction Stop)
+                if ($Children.Count -gt 0) {
+                    throw "preserved because it contains user or otherwise untracked content"
+                }
+                Remove-Item -Force -LiteralPath $Path -ErrorAction Stop
+                if (Test-PathEntryExists $Path) {
+                    throw "could not confirm removal"
+                }
+            } catch {
+                $Complete = $false
+                [void]$Issues.Add("created Skill directory ${Path}: $($_.Exception.Message)")
+            }
+        }
+        return $Complete
+    }
+
+    function Try-RestoreMovedItem([string]$Source, [string]$Destination, [string]$Label, [System.Collections.Generic.List[string]]$Issues, [switch]$Directory) {
+        try {
+            [void](Assert-SafeInstallerDestinationPath $Source "$Label backup")
+            [void](Assert-SafeInstallerDestinationPath $Destination $Label)
+            $SourceItem = Get-PathEntry $Source
+            if ($null -eq $SourceItem) {
+                throw "backup item is missing"
+            }
+            if ($Directory) {
+                if (-not $SourceItem.PSIsContainer -or (($SourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                    throw "backup item is not a regular directory"
+                }
+            } elseif ($SourceItem.PSIsContainer -or (($SourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw "backup item is not a regular file"
+            }
+            if (Test-PathEntryExists $Destination) {
+                throw "destination is already occupied; both the backup and destination were preserved"
+            }
+            [void](Ensure-SafeInstallerDirectory (Split-Path $Destination -Parent) "$Label destination parent")
+            Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
+            if (Test-PathEntryExists $Source -or -not (Test-PathEntryExists $Destination)) {
+                throw "could not confirm restoration"
+            }
+            $DestinationItem = Get-PathEntry $Destination
+            if ($Directory) {
+                if (-not $DestinationItem.PSIsContainer -or (($DestinationItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                    throw "restored destination is not a regular directory"
+                }
+            } elseif ($DestinationItem.PSIsContainer -or (($DestinationItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw "restored destination is not a regular file"
+            }
+            return $true
+        } catch {
+            [void]$Issues.Add("$Label restoration failed: $($_.Exception.Message)")
+            return $false
         }
     }
 
@@ -719,52 +850,74 @@ try {
         foreach ($File in @(Get-ChildItem -LiteralPath $StageAgents -Filter "*.toml" -File)) {
             $Dest = Join-Path $AgentDest $File.Name
             Install-AgentNoClobber $File.FullName $Dest
-            $MovedNewAgents.Add($Dest)
+            $MovedNewAgents.Add([pscustomobject]@{ Path = $Dest; Hash = (Get-Sha256 $File.FullName) })
         }
 
         $Managed = Read-ManagedManifest
         $Modified = @(Get-ModifiedManagedFiles $Managed)
         if ($Modified.Count -gt 0) { throw "Post-install integrity verification failed: $($Modified -join ', ')" }
     } catch {
-        if ($NewSkillInstalled -and (Test-Path -LiteralPath $SkillDest)) {
-            [void](Assert-SafeInstallerDestinationPath $SkillDest "Skill destination")
-            Remove-Item -Recurse -Force -LiteralPath $SkillDest
-        }
-        foreach ($Path in $MovedNewAgents) {
-            if (Test-Path -LiteralPath $Path) {
-                [void](Assert-SafeInstallerDestinationPath $Path "Agent destination")
-                Remove-Item -Force -LiteralPath $Path
+        $OriginalErrorMessage = $_.Exception.Message
+        $RollbackComplete = $true
+        $RollbackIssues = New-Object System.Collections.Generic.List[string]
+
+        if ($NewSkillInstalled) {
+            foreach ($Entry in $CreatedSkillFiles.ToArray()) {
+                if (-not (Try-RemoveTrackedFile $Entry.Path "created Skill file" $Entry.Hash $RollbackIssues)) {
+                    $RollbackComplete = $false
+                }
+            }
+            if (-not (Remove-TrackedSkillDirectories $CreatedSkillDirectories $RollbackIssues)) {
+                $RollbackComplete = $false
             }
         }
+
+        foreach ($Entry in $MovedNewAgents.ToArray()) {
+            if (-not (Try-RemoveTrackedFile $Entry.Path "created Agent file" $Entry.Hash $RollbackIssues)) {
+                $RollbackComplete = $false
+            }
+        }
+
         if ($BackupRoot) {
             $BackupSkill = Join-Path $BackupRoot "skill"
-            if ($SkillBackedUp -and (Test-Path -LiteralPath $BackupSkill)) {
-                [void](Ensure-SafeInstallerDirectory (Split-Path $SkillDest -Parent) "Skill destination parent")
-                [void](Assert-SafeInstallerDestinationPath $BackupSkill "install backup skill")
-                [void](Assert-SafeInstallerDestinationPath $SkillDest "Skill destination")
-                Move-Item -LiteralPath $BackupSkill -Destination $SkillDest
+            if ($SkillBackedUp) {
+                if (-not (Try-RestoreMovedItem $BackupSkill $SkillDest "Skill destination" $RollbackIssues -Directory)) {
+                    $RollbackComplete = $false
+                }
             }
             $BackupAgents = Join-Path $BackupRoot "agents"
-            if (Test-Path -LiteralPath $BackupAgents) {
-                [void](Ensure-SafeInstallerDirectory $AgentDest "Agent destination")
-                foreach ($Name in $BackedUpAgents) {
-                    $BackupAgent = Join-Path $BackupAgents $Name
-                    if (Test-Path -LiteralPath $BackupAgent) {
-                        $RestoreAgent = Join-Path $AgentDest $Name
-                        [void](Assert-SafeInstallerDestinationPath $BackupAgent "install backup Agent")
-                        [void](Assert-SafeInstallerDestinationPath $RestoreAgent "Agent destination")
-                        Move-Item -LiteralPath $BackupAgent -Destination $RestoreAgent
-                    }
+            foreach ($Name in $BackedUpAgents) {
+                $BackupAgent = Join-Path $BackupAgents $Name
+                $RestoreAgent = Join-Path $AgentDest $Name
+                if (-not (Try-RestoreMovedItem $BackupAgent $RestoreAgent "Agent destination" $RollbackIssues)) {
+                    $RollbackComplete = $false
                 }
+            }
+            if ($LegacyOrchestratorBackedUp) {
                 $BackupLegacyOrchestrator = Join-Path $BackupAgents "orchestrator.toml"
-                if ($LegacyOrchestratorBackedUp -and (Test-Path -LiteralPath $BackupLegacyOrchestrator)) {
-                    [void](Assert-SafeInstallerDestinationPath $BackupLegacyOrchestrator "install backup legacy Agent")
-                    [void](Assert-SafeInstallerDestinationPath $LegacyOrchestratorPath "legacy Agent destination")
-                    Move-Item -LiteralPath $BackupLegacyOrchestrator -Destination $LegacyOrchestratorPath
+                if (-not (Try-RestoreMovedItem $BackupLegacyOrchestrator $LegacyOrchestratorPath "legacy Agent destination" $RollbackIssues)) {
+                    $RollbackComplete = $false
                 }
             }
         }
-        throw "Installation failed; managed targets were rolled back. $($_.Exception.Message)"
+
+        if ($RollbackComplete) {
+            throw "Installation failed; managed targets were rolled back. $OriginalErrorMessage"
+        }
+
+        $RecoveryPath = $null
+        if ($BackupRoot -and (Test-PathEntryExists $BackupRoot)) {
+            $RecoveryPath = $BackupRoot
+        } elseif (Test-PathEntryExists $SkillDest) {
+            $RecoveryPath = $SkillDest
+        } elseif (Test-PathEntryExists $Stage) {
+            $RecoveryPath = $Stage
+            $PreserveStage = $true
+        } else {
+            $RecoveryPath = $StateRoot
+        }
+        $IssueText = if ($RollbackIssues.Count -gt 0) { " Rollback issues: $($RollbackIssues -join '; ')." } else { "" }
+        throw "Installation failed; rollback incomplete. Remaining backup or destination state is preserved at $RecoveryPath; manual recovery is required. Original error: $OriginalErrorMessage.$IssueText"
     }
 
     Write-Host "Installed Agent Orchestrator v$Version"
@@ -772,7 +925,7 @@ try {
     Write-Host "Agent profiles: $AgentDest"
     if ($BackupRoot) { Write-Host "Backup: $BackupRoot" }
 } finally {
-    if (Test-Path -LiteralPath $Stage) {
+    if (-not $PreserveStage -and (Test-Path -LiteralPath $Stage)) {
         [void](Assert-SafeInstallerDestinationPath $Stage "staging operation")
         Remove-Item -Recurse -Force -LiteralPath $Stage
     }

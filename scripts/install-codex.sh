@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 FORCE=0
 CHECK=0
@@ -30,10 +30,24 @@ INSTALL_MANIFEST_NAME=".agent-orchestrator-install.tsv"
 INSTALL_MANIFEST="$SKILL_DEST/$INSTALL_MANIFEST_NAME"
 LOCK_DIR="$STATE_ROOT/operation.lock"
 LOCK_HELD=0
+TRACKED_DIRECTORY_ROOT=""
+CREATED_SKILL_DIRS=()
+NEW_SKILL_FILES=()
+NEW_SKILL_FILE_HASHES=()
+ROLLBACK_PRESERVED_PATHS=()
+PRESERVE_STAGE=0
 
 unsafe_destination() {
   echo "Unsafe installer destination: $1${2:+ ($2)}" >&2
   return 1
+}
+
+record_created_directory() {
+  local path="$1"
+  if [[ -n "$TRACKED_DIRECTORY_ROOT" &&
+        ( "$path" == "$TRACKED_DIRECTORY_ROOT" || "$path" == "$TRACKED_DIRECTORY_ROOT/"* ) ]]; then
+    CREATED_SKILL_DIRS+=("$path")
+  fi
 }
 
 # Check existing destination components without resolving the configured home
@@ -78,6 +92,7 @@ assert_safe_destination_path() {
     fi
     if [[ -L "$cursor" ]]; then
       unsafe_destination "$path" "symlink component: $cursor"
+      return 1
     fi
     if [[ "$index" -lt $((${#parts[@]} - 1)) && -e "$cursor" && ! -d "$cursor" ]]; then
       unsafe_destination "$path" "non-directory ancestor: $cursor"
@@ -90,9 +105,13 @@ assert_safe_destination_path() {
 # creation.  The configured home itself may be a user-provided symlink; only
 # descendants are rejected.
 ensure_safe_directory() {
-  local path="$1" relative cursor part index
+  local path="$1" require_missing="${2:-0}" relative cursor part index
   local parts=()
   assert_safe_destination_path "$path" || return 1
+  if [[ "$require_missing" -eq 1 && ( -e "$path" || -L "$path" ) ]]; then
+    echo "Destination already exists: $path" >&2
+    return 1
+  fi
 
   if [[ "$path" == "$TARGET_HOME_ROOT" ]]; then
     if [[ ! -e "$TARGET_HOME_ROOT" && ! -L "$TARGET_HOME_ROOT" ]]; then
@@ -126,9 +145,14 @@ ensure_safe_directory() {
       return 1
     fi
     if [[ -e "$cursor" ]]; then
+      if [[ "$require_missing" -eq 1 && "$index" -eq $((${#parts[@]} - 1)) ]]; then
+        echo "Destination already exists: $path" >&2
+        return 1
+      fi
       [[ -d "$cursor" ]] || { echo "Destination component is not a directory: $cursor" >&2; return 1; }
     else
       mkdir "$cursor" || { echo "Unable to create destination directory: $cursor" >&2; return 1; }
+      record_created_directory "$cursor"
       [[ ! -L "$cursor" && -d "$cursor" ]] || {
         unsafe_destination "$path" "unsafe component created: $cursor"
         return 1
@@ -147,11 +171,17 @@ assert_destination_layout() {
 }
 
 copy_file_noclobber() {
-  local src="$1" dest="$2" parent temp
+  local src="$1" dest="$2" track_kind="${3:-}" parent temp expected_hash=""
+  if [[ "$track_kind" == "skill" ]]; then
+    expected_hash="$(sha256_file "$src")" || return 1
+  fi
   parent="$(dirname "$dest")"
   ensure_safe_directory "$parent" || return 1
   assert_safe_destination_path "$dest" || return 1
   if path_exists_or_link "$dest"; then
+    if [[ "$track_kind" == "skill" ]]; then
+      ROLLBACK_PRESERVED_PATHS+=("$dest")
+    fi
     echo "Late or unverified destination collision detected; refusing to overwrite: $dest" >&2
     return 1
   fi
@@ -162,8 +192,15 @@ copy_file_noclobber() {
   fi
   if ! assert_safe_destination_path "$dest" || path_exists_or_link "$dest" || ! ln "$temp" "$dest" 2>/dev/null; then
     rm -f -- "$temp"
+    if [[ "$track_kind" == "skill" ]] && path_exists_or_link "$dest"; then
+      ROLLBACK_PRESERVED_PATHS+=("$dest")
+    fi
     echo "Late or unverified destination collision detected; refusing to overwrite: $dest" >&2
     return 1
+  fi
+  if [[ "$track_kind" == "skill" ]]; then
+    NEW_SKILL_FILES+=("$dest")
+    NEW_SKILL_FILE_HASHES+=("$expected_hash")
   fi
   rm -f -- "$temp"
 }
@@ -666,37 +703,78 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   ensure_safe_directory "$BACKUP_ROOT/agents"
   assert_safe_destination_path "$SKILL_DEST"
   assert_safe_destination_path "$BACKUP_ROOT/skill"
+  UNINSTALL_SKILL_BACKED_UP=0
+  UNINSTALL_AGENT_NAMES=()
   rollback_uninstall() {
     local status=$?
+    local rollback_complete=1
+    local agent_destination_ready=1
     trap - ERR INT TERM
-    if [[ -e "$BACKUP_ROOT/skill" && ! -e "$SKILL_DEST" ]]; then
-      if ensure_safe_directory "$(dirname "$SKILL_DEST")" &&
-         assert_safe_destination_path "$BACKUP_ROOT/skill" &&
-         assert_safe_destination_path "$SKILL_DEST"; then
-        mv "$BACKUP_ROOT/skill" "$SKILL_DEST"
+    if [[ "$UNINSTALL_SKILL_BACKED_UP" -eq 1 ]]; then
+      if ! assert_safe_destination_path "$BACKUP_ROOT/skill" ||
+         ! assert_safe_destination_path "$SKILL_DEST"; then
+        rollback_complete=0
+      elif path_exists_or_link "$SKILL_DEST"; then
+        rollback_complete=0
+      elif ! path_exists_or_link "$BACKUP_ROOT/skill" ||
+           [[ ! -d "$BACKUP_ROOT/skill" || -L "$BACKUP_ROOT/skill" ]] ||
+           ! ensure_safe_directory "$(dirname "$SKILL_DEST")" ||
+           ! mv "$BACKUP_ROOT/skill" "$SKILL_DEST" ||
+           path_exists_or_link "$BACKUP_ROOT/skill" ||
+           [[ ! -d "$SKILL_DEST" || -L "$SKILL_DEST" ]] ||
+           ! assert_safe_destination_path "$SKILL_DEST"; then
+        rollback_complete=0
       fi
     fi
-    ensure_safe_directory "$AGENT_DEST" || true
-    local src
-    for src in "$BACKUP_ROOT"/agents/*.toml; do
-      [[ -e "$src" ]] || continue
-      if assert_safe_destination_path "$src" &&
-         assert_safe_destination_path "$AGENT_DEST/$(basename "$src")"; then
-        mv "$src" "$AGENT_DEST/$(basename "$src")"
+    if [[ ${#UNINSTALL_AGENT_NAMES[@]} -gt 0 ]]; then
+      if ! ensure_safe_directory "$AGENT_DEST" ||
+         ! assert_safe_destination_path "$AGENT_DEST"; then
+        rollback_complete=0
+        agent_destination_ready=0
       fi
-    done
-    echo "Uninstall failed; managed targets were rolled back." >&2
+      local name src dest
+      for name in "${UNINSTALL_AGENT_NAMES[@]}"; do
+        src="$BACKUP_ROOT/agents/$name"
+        dest="$AGENT_DEST/$name"
+        if [[ "$agent_destination_ready" -ne 1 ]]; then
+          continue
+        fi
+        if ! assert_safe_destination_path "$src" ||
+           ! assert_safe_destination_path "$dest"; then
+          rollback_complete=0
+        elif path_exists_or_link "$dest"; then
+          if path_exists_or_link "$src"; then
+            rollback_complete=0
+          fi
+        elif ! path_exists_or_link "$src" ||
+             [[ ! -f "$src" || -L "$src" ]] ||
+             ! mv "$src" "$dest" ||
+             path_exists_or_link "$src" ||
+             [[ ! -f "$dest" || -L "$dest" ]] ||
+             ! assert_safe_destination_path "$dest"; then
+          rollback_complete=0
+        fi
+      done
+    fi
+    if [[ "$rollback_complete" -eq 1 ]]; then
+      echo "Uninstall failed; managed targets were rolled back." >&2
+    else
+      echo "Uninstall failed; rollback incomplete. Remaining backup state is preserved at $BACKUP_ROOT; manual recovery is required." >&2
+      [[ "$status" -ne 0 ]] || status=1
+    fi
     exit "$status"
   }
   trap rollback_uninstall ERR INT TERM
   assert_safe_destination_path "$SKILL_DEST"
   assert_safe_destination_path "$BACKUP_ROOT/skill"
   mv "$SKILL_DEST" "$BACKUP_ROOT/skill"
+  UNINSTALL_SKILL_BACKED_UP=1
   for name in "${MANAGED_AGENT_NAMES[@]}"; do
     if path_exists_or_link "$AGENT_DEST/$name"; then
       assert_safe_destination_path "$AGENT_DEST/$name"
       assert_safe_destination_path "$BACKUP_ROOT/agents/$name"
       mv "$AGENT_DEST/$name" "$BACKUP_ROOT/agents/$name"
+      UNINSTALL_AGENT_NAMES+=("$name")
     fi
   done
   trap - ERR INT TERM
@@ -753,7 +831,11 @@ ensure_safe_directory "$STATE_ROOT/staging"
 STAGE="$(mktemp -d "$STATE_ROOT/staging/install.XXXXXX")"
 assert_safe_destination_path "$STAGE"
 cleanup_stage() {
-  if assert_safe_destination_path "$STAGE"; then
+  if [[ "$PRESERVE_STAGE" -eq 1 ]]; then
+    if ! assert_safe_destination_path "$STAGE"; then
+      echo "Unsafe staged recovery path; leaving it in place: $STAGE" >&2
+    fi
+  elif assert_safe_destination_path "$STAGE"; then
     rm -rf -- "$STAGE"
   fi
   release_operation_lock
@@ -782,7 +864,7 @@ if path_exists_or_link "$STAGED_MANIFEST"; then
   echo "Unexpected staged manifest collision: $STAGED_MANIFEST" >&2
   exit 1
 fi
-STAGED_MANIFEST_TEMP="$(mktemp "$STAGE/skill/.agent-orchestrator-manifest.XXXXXX")"
+STAGED_MANIFEST_TEMP="$(mktemp "$STAGE/.agent-orchestrator-manifest.XXXXXX")"
 assert_safe_destination_path "$STAGED_MANIFEST_TEMP"
 {
   printf 'version\t%s\t-\n' "$VERSION"
@@ -838,30 +920,54 @@ LEGACY_ORCHESTRATOR_BACKED_UP=0
 
 install_agent_noclobber() {
   local src="$1" dest="$2" temp
-  temp="$(mktemp "$AGENT_DEST/.agent-orchestrator-agent.XXXXXX")" || return 1
-  if ! cp "$src" "$temp" || ! chmod 0644 "$temp"; then
-    rm -f "$temp"
+  ensure_safe_directory "$AGENT_DEST" || return 1
+  assert_safe_destination_path "$AGENT_DEST" || return 1
+  if ! assert_safe_destination_path "$dest"; then
+    path_exists_or_link "$dest" && ROLLBACK_PRESERVED_PATHS+=("$dest")
     return 1
   fi
-  if ! ln "$temp" "$dest" 2>/dev/null; then
-    rm -f "$temp"
+  if path_exists_or_link "$dest"; then
+    ROLLBACK_PRESERVED_PATHS+=("$dest")
     echo "Late or unverified Agent collision detected during commit; refusing to overwrite: $dest" >&2
     return 1
   fi
-  rm -f "$temp"
+  temp="$(mktemp "$AGENT_DEST/.agent-orchestrator-agent.XXXXXX")" || return 1
+  if ! assert_safe_destination_path "$temp" || ! cp "$src" "$temp" || ! chmod 0644 "$temp"; then
+    rm -f -- "$temp"
+    return 1
+  fi
+  if ! assert_safe_destination_path "$dest" || path_exists_or_link "$dest" || ! ln "$temp" "$dest" 2>/dev/null; then
+    rm -f -- "$temp"
+    if path_exists_or_link "$dest"; then
+      ROLLBACK_PRESERVED_PATHS+=("$dest")
+    fi
+    echo "Late or unverified Agent collision detected during commit; refusing to overwrite: $dest" >&2
+    return 1
+  fi
+
+  NEW_AGENT_NAMES+=("$(basename "$dest")")
+  rm -f -- "$temp"
 }
 
 install_skill_noclobber() {
-  local relative dest
-  if ! mkdir "$SKILL_DEST" 2>/dev/null; then
+  local relative dest parent
+  if ! ensure_safe_directory "$SKILL_DEST" 1; then
     echo "Late or unverified Skill collision detected during commit; refusing to overwrite: $SKILL_DEST" >&2
     return 1
   fi
+  assert_safe_destination_path "$SKILL_DEST" || return 1
+  [[ -d "$SKILL_DEST" && ! -L "$SKILL_DEST" ]] || {
+    echo "Late or unverified Skill collision detected during commit; refusing to overwrite: $SKILL_DEST" >&2
+    return 1
+  }
   NEW_SKILL_INSTALLED=1
   for relative in "${SKILL_RUNTIME_FILES[@]}" "$INSTALL_MANIFEST_NAME"; do
     dest="$SKILL_DEST/$relative"
-    mkdir -p "$(dirname "$dest")"
-    cp "$STAGE/skill/$relative" "$dest"
+    parent="$(dirname "$dest")"
+    ensure_safe_directory "$parent" || return 1
+    assert_safe_destination_path "$parent" || return 1
+    assert_safe_destination_path "$dest" || return 1
+    copy_file_noclobber "$STAGE/skill/$relative" "$dest" skill
   done
 }
 
@@ -870,34 +976,187 @@ rollback_install() {
   [[ "$ROLLED_BACK" -eq 1 ]] && exit "$status"
   ROLLED_BACK=1
   trap - ERR INT TERM
-  local name
-  if [[ "$NEW_SKILL_INSTALLED" -eq 1 && -e "$SKILL_DEST" ]]; then
-    rm -rf "$SKILL_DEST"
-  fi
-  for name in "${NEW_AGENT_NAMES[@]}"; do
-    rm -f "$AGENT_DEST/$name"
+  TRACKED_DIRECTORY_ROOT=""
+  local rollback_complete=1 agent_destination_ready=1
+  local name src dest parent expected current retained_backup recovery_path
+  local i
+
+  # Remove only files that this install linked into the real Skill destination.
+  # A hash check prevents rollback from deleting content that changed after it
+  # was installed.  Any such content is left in place and reported as an
+  # incomplete rollback below.
+  for i in "${!NEW_SKILL_FILES[@]}"; do
+    dest="${NEW_SKILL_FILES[$i]}"
+    if ! path_exists_or_link "$dest"; then
+      continue
+    fi
+    expected="${NEW_SKILL_FILE_HASHES[$i]:-}"
+    if ! assert_safe_destination_path "$dest" ||
+       [[ -L "$dest" || ! -f "$dest" ]] ||
+       [[ ! "$expected" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+      rollback_complete=0
+      continue
+    fi
+    current="$(sha256_file "$dest" 2>/dev/null || true)"
+    if [[ "$current" != "$expected" ]]; then
+      rollback_complete=0
+      continue
+    fi
+    if ! rm -f -- "$dest" || path_exists_or_link "$dest"; then
+      rollback_complete=0
+    fi
   done
-  if [[ "$SKILL_BACKED_UP" -eq 1 && -e "$BACKUP_ROOT/skill" ]]; then
-    mkdir -p "$(dirname "$SKILL_DEST")"
-    mv "$BACKUP_ROOT/skill" "$SKILL_DEST"
-  fi
-  if [[ -n "$BACKUP_ROOT" ]]; then
-    mkdir -p "$AGENT_DEST"
-    for name in "${BACKED_UP_AGENT_NAMES[@]}"; do
-      if [[ -e "$BACKUP_ROOT/agents/$name" ]]; then
-        mv "$BACKUP_ROOT/agents/$name" "$AGENT_DEST/$name"
+
+  # Directories are recorded in creation order, so remove them in reverse
+  # order.  rmdir intentionally fails for directories containing user data;
+  # that data is never recursively removed.
+  for ((i=${#CREATED_SKILL_DIRS[@]} - 1; i >= 0; i--)); do
+    dest="${CREATED_SKILL_DIRS[$i]}"
+    if ! path_exists_or_link "$dest"; then
+      continue
+    fi
+    if ! assert_safe_destination_path "$dest" ||
+       [[ -L "$dest" || ! -d "$dest" ]] ||
+       ! rmdir -- "$dest" ||
+       path_exists_or_link "$dest"; then
+      rollback_complete=0
+    fi
+  done
+
+  # A no-clobber collision may have been created by a user between the
+  # preflight and commit checks.  It is never removed, and its presence means
+  # rollback cannot be considered complete.
+  for dest in "${ROLLBACK_PRESERVED_PATHS[@]}"; do
+    if path_exists_or_link "$dest"; then
+      rollback_complete=0
+    fi
+  done
+
+  # Remove only Agent profiles successfully linked by this attempt.  The
+  # helper records each name immediately after the link succeeds, before its
+  # temporary-file cleanup can fail.
+  for name in "${NEW_AGENT_NAMES[@]}"; do
+    dest="$AGENT_DEST/$name"
+    if path_exists_or_link "$dest"; then
+      if ! assert_safe_destination_path "$dest" ||
+         [[ -L "$dest" || ! -f "$dest" ]] ||
+         ! rm -f -- "$dest" ||
+         path_exists_or_link "$dest"; then
+        rollback_complete=0
       fi
-    done
-    if [[ "$LEGACY_ORCHESTRATOR_BACKED_UP" -eq 1 && -e "$BACKUP_ROOT/agents/orchestrator.toml" ]]; then
-      mv "$BACKUP_ROOT/agents/orchestrator.toml" "$LEGACY_ORCHESTRATOR_PATH"
+    fi
+  done
+
+  if [[ "$SKILL_BACKED_UP" -eq 1 ]]; then
+    src="$BACKUP_ROOT/skill"
+    dest="$SKILL_DEST"
+    parent="$(dirname "$dest")"
+    if [[ -z "$BACKUP_ROOT" ]] ||
+       ! assert_safe_destination_path "$src" ||
+       ! assert_safe_destination_path "$dest"; then
+      rollback_complete=0
+    elif path_exists_or_link "$dest"; then
+      if path_exists_or_link "$src" || [[ ! -d "$dest" || -L "$dest" ]]; then
+        rollback_complete=0
+      fi
+    elif ! path_exists_or_link "$src" ||
+         [[ ! -d "$src" || -L "$src" ]] ||
+         ! ensure_safe_directory "$parent" ||
+         ! assert_safe_destination_path "$parent" ||
+         ! mv "$src" "$dest" ||
+         path_exists_or_link "$src" ||
+         [[ ! -d "$dest" || -L "$dest" ]] ||
+         ! assert_safe_destination_path "$dest"; then
+      rollback_complete=0
     fi
   fi
-  echo "Installation failed; only changes completed by this install attempt were rolled back." >&2
+
+  if [[ ${#BACKED_UP_AGENT_NAMES[@]} -gt 0 || "$LEGACY_ORCHESTRATOR_BACKED_UP" -eq 1 ]]; then
+    if [[ -z "$BACKUP_ROOT" ]] ||
+       ! ensure_safe_directory "$AGENT_DEST" ||
+       ! assert_safe_destination_path "$AGENT_DEST"; then
+      rollback_complete=0
+      agent_destination_ready=0
+    fi
+    if [[ "$agent_destination_ready" -eq 1 ]]; then
+      for name in "${BACKED_UP_AGENT_NAMES[@]}"; do
+        src="$BACKUP_ROOT/agents/$name"
+        dest="$AGENT_DEST/$name"
+        if ! assert_safe_destination_path "$src" ||
+           ! assert_safe_destination_path "$dest"; then
+          rollback_complete=0
+        elif path_exists_or_link "$dest"; then
+          if path_exists_or_link "$src" || [[ ! -f "$dest" || -L "$dest" ]]; then
+            rollback_complete=0
+          fi
+        elif ! path_exists_or_link "$src" ||
+             [[ ! -f "$src" || -L "$src" ]] ||
+             ! mv "$src" "$dest" ||
+             path_exists_or_link "$src" ||
+             [[ ! -f "$dest" || -L "$dest" ]] ||
+             ! assert_safe_destination_path "$dest"; then
+          rollback_complete=0
+        fi
+      done
+      if [[ "$LEGACY_ORCHESTRATOR_BACKED_UP" -eq 1 ]]; then
+        src="$BACKUP_ROOT/agents/orchestrator.toml"
+        dest="$LEGACY_ORCHESTRATOR_PATH"
+        if ! assert_safe_destination_path "$src" ||
+           ! assert_safe_destination_path "$dest"; then
+          rollback_complete=0
+        elif path_exists_or_link "$dest"; then
+          if path_exists_or_link "$src" || [[ ! -f "$dest" || -L "$dest" ]]; then
+            rollback_complete=0
+          fi
+        elif ! path_exists_or_link "$src" ||
+             [[ ! -f "$src" || -L "$src" ]] ||
+             ! mv "$src" "$dest" ||
+             path_exists_or_link "$src" ||
+             [[ ! -f "$dest" || -L "$dest" ]] ||
+             ! assert_safe_destination_path "$dest"; then
+          rollback_complete=0
+        fi
+      fi
+    fi
+  fi
+
+  if [[ "$rollback_complete" -eq 1 ]]; then
+    echo "Installation failed; only changes completed by this install attempt were rolled back." >&2
+  else
+    # If no backup content remains, the staging tree is the recovery artifact;
+    # keep it through EXIT cleanup.  Do not report empty/nonexistent recovery
+    # roots as retained state.
+    if [[ -n "$BACKUP_ROOT" ]] &&
+       assert_safe_destination_path "$BACKUP_ROOT" &&
+       [[ -d "$BACKUP_ROOT" && ! -L "$BACKUP_ROOT" ]]; then
+      retained_backup="$(find "$BACKUP_ROOT" -mindepth 1 \( -type f -o -type l \) -print -quit 2>/dev/null || true)"
+    else
+      retained_backup=""
+    fi
+    if [[ -z "$retained_backup" ]]; then
+      PRESERVE_STAGE=1
+    fi
+    recovery_path=""
+    if [[ -n "$retained_backup" ]]; then
+      recovery_path="$BACKUP_ROOT"
+    elif [[ "$PRESERVE_STAGE" -eq 1 ]] && path_exists_or_link "$STAGE"; then
+      recovery_path="$STAGE"
+    fi
+    if [[ -n "$recovery_path" ]]; then
+      echo "Installation failed; rollback incomplete. Remaining backup/staged state is preserved at $recovery_path; manual recovery is required." >&2
+    else
+      echo "Installation failed; rollback incomplete. No backup/staged recovery path remains; manual recovery is required." >&2
+    fi
+    [[ "$status" -ne 0 ]] || status=1
+  fi
   exit "$status"
 }
 trap rollback_install ERR INT TERM
 
-mkdir -p "$(dirname "$SKILL_DEST")" "$AGENT_DEST"
+ensure_safe_directory "$(dirname "$SKILL_DEST")"
+assert_safe_destination_path "$(dirname "$SKILL_DEST")"
+ensure_safe_directory "$AGENT_DEST"
+assert_safe_destination_path "$AGENT_DEST"
 if path_exists_or_link "$SKILL_DEST"; then
   if ! array_contains "$SKILL_DEST" "${MANAGED_COLLISIONS[@]}"; then
     echo "Late unverified Skill collision appeared during commit; refusing to take ownership: $SKILL_DEST" >&2
@@ -928,12 +1187,13 @@ elif [[ "$LEGACY_ORCHESTRATOR_STATUS" == "known" ]]; then
   LEGACY_ORCHESTRATOR_BACKED_UP=1
 fi
 
+TRACKED_DIRECTORY_ROOT="$SKILL_DEST"
 install_skill_noclobber
+TRACKED_DIRECTORY_ROOT=""
 for src in "$STAGE"/agents/*.toml; do
   name="$(basename "$src")"
   dest="$AGENT_DEST/$name"
   install_agent_noclobber "$src" "$dest"
-  NEW_AGENT_NAMES+=("$name")
 done
 
 # Post-install integrity verification against the newly written managed manifest.

@@ -80,7 +80,7 @@ jobs:
           $env:AGENT_ORCHESTRATOR_HOME = Join-Path $env:RUNNER_TEMP "agent orchestrator 测试 home"
           & .\scripts\install-codex.ps1 -Check
           if (Test-Path (Join-Path $env:AGENT_ORCHESTRATOR_HOME ".agents")) { throw "-Check mutated the target home" }
-          $absentUninstallCheck = (& .\scripts\install-codex.ps1 -Uninstall -Check | Out-String)
+          $absentUninstallCheck = (& .\scripts\install-codex.ps1 -Uninstall -Check 6>&1 | Out-String)
           if ($absentUninstallCheck -notmatch "CHECK PASS" -or $absentUninstallCheck -notmatch "no managed installation") { throw "absent uninstall preflight was not neutral" }
 
           $stateRoot = Join-Path $env:AGENT_ORCHESTRATOR_HOME ".agent-orchestrator"
@@ -99,9 +99,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path $collisionDir | Out-Null
           $collision = Join-Path $collisionDir "frontend-worker.toml"
           Set-Content -LiteralPath $collision -Value "user-owned" -NoNewline
-          $checkOutput = (& .\scripts\install-codex.ps1 -Check | Out-String)
+          $checkOutput = (& .\scripts\install-codex.ps1 -Check 6>&1 | Out-String)
           if ($checkOutput -notmatch "CHECK PASS" -or $checkOutput -notmatch "unmanaged" -or $checkOutput -notmatch "blocked" -or $checkOutput -notmatch "will not replace") { throw "-Check unmanaged collision preview was not neutral/informative" }
-          $unmanagedUninstallCheck = (& .\scripts\install-codex.ps1 -Uninstall -Check | Out-String)
+          $unmanagedUninstallCheck = (& .\scripts\install-codex.ps1 -Uninstall -Check 6>&1 | Out-String)
           if ($unmanagedUninstallCheck -notmatch "CHECK PASS" -or $unmanagedUninstallCheck -notmatch "no managed installation" -or $unmanagedUninstallCheck -notmatch "unmanaged") { throw "unmanaged uninstall preflight was not neutral/informative" }
           if ((Get-Content -Raw -LiteralPath $collision) -ne "user-owned") { throw "-Check mutated collision file" }
           $failed = $false
@@ -116,7 +116,7 @@ jobs:
           $agents = Join-Path $env:AGENT_ORCHESTRATOR_HOME ".codex\agents"
           if (-not (Test-Path (Join-Path $skill ".agent-orchestrator-install.tsv"))) { throw "managed manifest missing" }
           if (@(Get-ChildItem -LiteralPath $agents -Filter "*.toml" -File).Count -ne 7) { throw "expected 7 installed worker agents" }
-          $managedCheckOutput = (& .\scripts\install-codex.ps1 -Check | Out-String)
+          $managedCheckOutput = (& .\scripts\install-codex.ps1 -Check 6>&1 | Out-String)
           if ($managedCheckOutput -notmatch "CHECK PASS" -or $managedCheckOutput -notmatch "verified managed" -or $managedCheckOutput -notmatch "requires -Force") { throw "-Check managed collision preview did not report the force requirement" }
 
           # A tampered install manifest must never escape the managed directories.
@@ -140,7 +140,7 @@ jobs:
 
           $userNote = Join-Path $skill "user-note.txt"
           Set-Content -LiteralPath $userNote -Value "user-owned extra content" -NoNewline
-          $extraSkillCheck = (& .\scripts\install-codex.ps1 -Uninstall -Check | Out-String)
+          $extraSkillCheck = (& .\scripts\install-codex.ps1 -Uninstall -Check 6>&1 | Out-String)
           if ($extraSkillCheck -notmatch "CHECK PASS" -or $extraSkillCheck -notmatch "user-note.txt" -or $extraSkillCheck -notmatch "requires -Force") { throw "untracked Skill content was not protected by uninstall preflight" }
           if (-not (Test-Path -LiteralPath $userNote)) { throw "-Uninstall -Check removed untracked Skill content" }
           Remove-Item -LiteralPath $userNote -Force
@@ -150,7 +150,7 @@ jobs:
           $sourceProfile = "templates\codex-agents\frontend-worker.toml"
           $parkedSourceProfile = "$sourceProfile.parked"
           Move-Item -LiteralPath $sourceProfile -Destination $parkedSourceProfile
-          $uninstallCheckOutput = (& .\scripts\install-codex.ps1 -Uninstall -Check | Out-String)
+          $uninstallCheckOutput = (& .\scripts\install-codex.ps1 -Uninstall -Check 6>&1 | Out-String)
           if ($uninstallCheckOutput -notmatch "CHECK PASS" -or $uninstallCheckOutput -notmatch "requires -Force") { throw "-Uninstall -Check did not report force requirement neutrally" }
           if (-not (Test-Path -LiteralPath $agent)) { throw "-Uninstall -Check mutated a managed agent" }
           $uninstallFailed = $false
